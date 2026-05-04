@@ -78,9 +78,15 @@ async function startBot() {
     if (type !== 'notify') return;
 
     for (const msg of messages) {
-      if (msg.key.fromMe) continue;
-
+      // Quand on envoie à son propre numéro (self-chat), fromMe peut être true.
+      // On accepte les messages "fromMe" UNIQUEMENT si le destinataire est l'owner
+      // (auquel cas c'est l'owner qui se parle à lui-même via WhatsApp).
+      // Pour les vrais messages venant d'un autre, fromMe est false et remoteJid
+      // est le JID de l'expéditeur.
       const senderJid = msg.key.remoteJid;
+      const isSelfChat = msg.key.fromMe && isAuthorizedSender(senderJid, OWNER_JID);
+
+      if (msg.key.fromMe && !isSelfChat) continue;
 
       // Sécurité : whitelist stricte
       if (!isAuthorizedSender(senderJid, OWNER_JID)) {

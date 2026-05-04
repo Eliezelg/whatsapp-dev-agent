@@ -242,16 +242,24 @@ export function audit(event, details = {}) {
 
 /**
  * Vérifie que le JID expéditeur est bien le owner.
- * Format JID WhatsApp : <numéro>@s.whatsapp.net (pas @g.us pour groupes).
+ *
+ * Format JID WhatsApp : <numéro>[:device]@s.whatsapp.net
+ * Le suffix :N est le device id (un même compte peut être linké sur plusieurs
+ * devices). On normalise en supprimant le device id avant comparaison.
+ *
+ * Refuse explicitement les groupes (@g.us) et broadcasts.
  */
 export function isAuthorizedSender(jid, ownerJid) {
   if (!jid || !ownerJid) return false;
-  // Refuse explicitement les groupes
   if (jid.endsWith('@g.us')) return false;
-  // Refuse les broadcasts/status
   if (jid === 'status@broadcast') return false;
-  // Match exact uniquement
-  return jid === ownerJid;
+  return normalizeJid(jid) === normalizeJid(ownerJid);
+}
+
+function normalizeJid(jid) {
+  // Strip device suffix (:8, :12, etc.) before @
+  // "33614330440:8@s.whatsapp.net" → "33614330440@s.whatsapp.net"
+  return jid.replace(/:\d+@/, '@');
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
