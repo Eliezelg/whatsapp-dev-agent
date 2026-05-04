@@ -28,7 +28,12 @@ Si tu as besoin de plus d'infos ou que tu veux juste converser, réponds normale
 export class Agent {
   constructor(apiKey) {
     this.genAI = new GoogleGenerativeAI(apiKey);
-    this.model = this.genAI.getGenerativeModel({ model: 'gemini-2.0-flash' });
+    // systemInstruction doit être passé au moment de getGenerativeModel(), pas
+    // dans startChat(). Format : { parts: [{ text }] }, pas une string brute.
+    this.model = this.genAI.getGenerativeModel({
+      model: 'gemini-2.0-flash',
+      systemInstruction: { parts: [{ text: SYSTEM_PROMPT }] },
+    });
     this.history = [];
     this.pendingExecution = null; // stocke l'action en attente de confirmation
   }
@@ -50,7 +55,6 @@ export class Agent {
 
     const chat = this.model.startChat({
       history: this.history.slice(0, -1),
-      systemInstruction: SYSTEM_PROMPT,
     });
 
     const result = await chat.sendMessage(contextualMessage);
