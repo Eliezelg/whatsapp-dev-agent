@@ -222,7 +222,9 @@ async function handleMessage(sock, jid, text) {
 
 async function send(sock, jid, text) {
   try {
-    await sock.sendMessage(jid, { text });
+    // Defense in depth : redact ALL outgoing messages, pas seulement les outputs Claude.
+    // Couvre err.message, summary Gemini, response.text, etc.
+    await sock.sendMessage(jid, { text: redactSecrets(text) });
   } catch (err) {
     console.error('Erreur envoi message:', err.message);
     audit('send_error', { error: err.message });

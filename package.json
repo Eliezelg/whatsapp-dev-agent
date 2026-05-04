@@ -3,14 +3,22 @@
   "version": "1.0.0",
   "type": "module",
   "scripts": {
-    "start": "node index.js"
+    "start": "node index.js",
+    "audit": "npm audit --omit=dev"
   },
   "dependencies": {
-    "@google/generative-ai": "^0.24.0",
-    "@whiskeysockets/baileys": "^6.7.18",
-    "dotenv": "^16.4.7",
-    "pino": "^9.6.0",
-    "pino-pretty": "^13.0.0",
-    "qrcode-terminal": "^0.12.0"
+    "@google/generative-ai": "0.24.1",
+    "@hapi/boom": "10.0.1",
+    "@whiskeysockets/baileys": "6.7.21",
+    "dotenv": "16.4.7",
+    "pino": "9.6.0",
+    "pino-pretty": "13.0.0",
+    "qrcode-terminal": "0.12.0"
+  },
+  "overrides": {
+    "protobufjs": "7.5.5"
+  },
+  "engines": {
+    "node": ">=22.0.0"
   }
 }

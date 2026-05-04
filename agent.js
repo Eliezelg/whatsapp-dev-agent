@@ -1,5 +1,8 @@
 import { GoogleGenerativeAI } from '@google/generative-ai';
 import { getProject, listProjects, setDefault, addProject } from './projects.js';
+import { validateProjectPath } from './security.js';
+
+const MAX_HISTORY_TURNS = 40; // 20 user + 20 model — anti-OOM + cost cap
 
 const SYSTEM_PROMPT = `Tu es un assistant de développement piloté depuis WhatsApp.
 Tu aides à gérer des projets web (Next.js, NestJS, PostgreSQL).
@@ -39,6 +42,11 @@ export class Agent {
     const contextualMessage = `[Projets disponibles:\n${projectList}]\n\nMessage: ${userMessage}`;
 
     this.history.push({ role: 'user', parts: [{ text: contextualMessage }] });
+
+    // Truncate history to limit Gemini cost + RAM
+    if (this.history.length > MAX_HISTORY_TURNS) {
+      this.history = this.history.slice(-MAX_HISTORY_TURNS);
+    }
 
     const chat = this.model.startChat({
       history: this.history.slice(0, -1),
@@ -121,8 +129,16 @@ function parseCommand(text) {
 
   const addMatch = text.match(/^\/add\s+(\w+)\s+(.+)$/i);
   if (addMatch) {
-    addProject(addMatch[1], addMatch[2]);
-    return { type: 'text', text: `✅ Projet *${addMatch[1]}* ajouté → ${addMatch[2]}` };
+    const [, name, rawPath] = addMatch;
+    const check = validateProjectPath(rawPath);
+    if (!check.valid) {
+      return {
+        type: 'text',
+        text: `🚫 Chemin refusé : ${check.reason}\nVérifie ALLOWED_PROJECT_ROOTS dans .env.`,
+      };
+    }
+    addProject(name, check.realPath);
+    return { type: 'text', text: `✅ Projet *${name}* ajouté → ${check.realPath}` };
   }
 
   if (t === '/reset') {

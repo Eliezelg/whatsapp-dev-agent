@@ -87,10 +87,19 @@ export const rateLimiter = new RateLimiter();
 // Validation des chemins de projets (anti path traversal)
 // ─────────────────────────────────────────────────────────────────────────────
 
-const ALLOWED_PROJECT_ROOTS = (process.env.ALLOWED_PROJECT_ROOTS || '/workspaces,/opt/projects,/home')
-  .split(',')
+const RAW_ROOTS = process.env.ALLOWED_PROJECT_ROOTS;
+if (!RAW_ROOTS) {
+  throw new Error(
+    'ALLOWED_PROJECT_ROOTS doit être défini dans .env (ex: /workspaces,/opt/projects).\n' +
+    'Pas de défaut permissif pour des raisons de sécurité.',
+  );
+}
+const ALLOWED_PROJECT_ROOTS = RAW_ROOTS.split(',')
   .map((p) => p.trim())
   .filter(Boolean);
+if (ALLOWED_PROJECT_ROOTS.length === 0) {
+  throw new Error('ALLOWED_PROJECT_ROOTS ne peut pas être vide.');
+}
 
 /**
  * Vérifie qu'un chemin de projet est dans une racine autorisée.
