@@ -1,0 +1,17 @@
+{
+  "default": "tzedakal",
+  "projects": {
+    "tzedakal": {
+      "path": "/workspaces/tzedakal",
+      "description": "NestJS + Next.js 15 + PostgreSQL"
+    },
+    "familink": {
+      "path": "/workspaces/familink",
+      "description": "Next.js 15"
+    },
+    "gmah": {
+      "path": "/workspaces/gmah",
+      "description": "React + Flask"
+    }
+  }
+}

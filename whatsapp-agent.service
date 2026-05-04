@@ -1,0 +1,27 @@
+[Unit]
+Description=WhatsApp Dev Agent (Gemini Flash + Claude Code)
+After=network.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=root
+WorkingDirectory=/opt/whatsapp-agent
+ExecStart=/usr/bin/node index.js
+Restart=always
+RestartSec=10
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=whatsapp-agent
+
+# Variables d'environnement — copier .env dans /etc/whatsapp-agent.env
+EnvironmentFile=/etc/whatsapp-agent.env
+
+# Sécurité
+NoNewPrivileges=true
+ProtectSystem=full
+ProtectHome=read-only
+ReadWritePaths=/opt/whatsapp-agent/auth
+
+[Install]
+WantedBy=multi-user.target
