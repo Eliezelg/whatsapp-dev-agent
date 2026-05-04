@@ -181,6 +181,29 @@ Envoie `/help` depuis WhatsApp → tu dois recevoir la liste des commandes.
 
 ---
 
+## 🔒 Sécurité
+
+**Lis [SECURITY.md](./SECURITY.md) avant la mise en production.**
+
+L'agent intègre par défaut :
+
+| Couche | Protection |
+|--------|-----------|
+| **Whitelist JID stricte** | Seul `WHATSAPP_OWNER` peut interagir. Groupes et broadcasts refusés. |
+| **Rate limiting** | 30 msg/min, 20 exécutions Claude Code/heure, 100/jour |
+| **Validation chemins** | `ALLOWED_PROJECT_ROOTS` — refus de `/etc`, `/root`, `~/.ssh`, `..`, etc. |
+| **Détection prompts dangereux** | `rm -rf /`, fork bomb, lecture `.env`/`/etc/passwd`, `chmod 777`, désactivation firewall, tunnels publics |
+| **Sandbox env** | Claude Code ne reçoit que `PATH`, `HOME`, `USER`, `ANTHROPIC_API_KEY` |
+| **Output sanitization** | Secrets (`sk-ant-*`, `AIza*`, JWT, `password=...`) remplacés par `[REDACTED]` avant envoi WhatsApp |
+| **Limits runtime** | timeout 30 min, output max 10 Mo, RAM max 2 Go (systemd) |
+| **Audit log JSONL** | Toutes les actions tracées dans `logs/audit.log` |
+| **Systemd hardened** | User dédié non-root, `ProtectSystem=strict`, capabilities vides, syscall filter |
+
+Hardening complet du VPS (UFW, fail2ban, SSH key-only, sysctl, backups
+chiffrés, monitoring) → voir [SECURITY.md](./SECURITY.md).
+
+---
+
 ## Coexistence avec Asterisk (VPS TzedaKal)
 
 Si le VPS fait tourner Asterisk (voir `docs/asterisk-migration/`), l'agent

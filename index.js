@@ -5,6 +5,15 @@ import qrcode from 'qrcode-terminal';
 import pino from 'pino';
 import { Agent } from './agent.js';
 import { runClaude } from './runner.js';
+import {
+  rateLimiter,
+  validateProjectPath,
+  detectDangerousPrompt,
+  validateMessageLength,
+  isAuthorizedSender,
+  redactSecrets,
+  audit,
+} from './security.js';
 
 const OWNER_JID = process.env.WHATSAPP_OWNER;
 if (!OWNER_JID) {
@@ -15,10 +24,16 @@ if (!process.env.GEMINI_API_KEY) {
   console.error('❌ GEMINI_API_KEY manquant dans .env');
   process.exit(1);
 }
+if (!OWNER_JID.endsWith('@s.whatsapp.net')) {
+  console.error('❌ WHATSAPP_OWNER doit se terminer par @s.whatsapp.net');
+  process.exit(1);
+}
 
-const logger = pino({ level: 'silent' }); // silence Baileys logs
+const logger = pino({ level: 'silent' });
 const agent = new Agent(process.env.GEMINI_API_KEY);
-let activeSessions = new Set(); // évite les doubles exécutions simultanées
+let activeSessions = new Set();
+
+audit('boot', { owner: OWNER_JID, pid: process.pid });
 
 async function startBot() {
   const { state, saveCreds } = await useMultiFileAuthState('./auth');
@@ -38,15 +53,18 @@ async function startBot() {
     if (qr) {
       console.log('\n📱 Scanne ce QR code avec WhatsApp :\n');
       qrcode.generate(qr, { small: true });
+      audit('qr_displayed');
     }
 
     if (connection === 'open') {
       console.log('✅ WhatsApp connecté !');
+      audit('connection_open');
     }
 
     if (connection === 'close') {
       const shouldReconnect =
         new Boom(lastDisconnect?.error)?.output?.statusCode !== DisconnectReason.loggedOut;
+      audit('connection_close', { shouldReconnect });
       if (shouldReconnect) {
         console.log('🔄 Reconnexion...');
         startBot();
@@ -61,7 +79,14 @@ async function startBot() {
 
     for (const msg of messages) {
       if (msg.key.fromMe) continue;
-      if (msg.key.remoteJid !== OWNER_JID) continue; // sécurité : whitelist
+
+      const senderJid = msg.key.remoteJid;
+
+      // Sécurité : whitelist stricte
+      if (!isAuthorizedSender(senderJid, OWNER_JID)) {
+        audit('unauthorized_sender', { jid: senderJid });
+        continue;
+      }
 
       const text =
         msg.message?.conversation ||
@@ -70,25 +95,86 @@ async function startBot() {
 
       if (!text.trim()) continue;
 
-      await handleMessage(sock, OWNER_JID, text.trim());
+      // Validation longueur
+      const lenCheck = validateMessageLength(text);
+      if (!lenCheck.valid) {
+        audit('message_rejected', { reason: lenCheck.reason });
+        await send(sock, senderJid, `⚠️ ${lenCheck.reason}`);
+        continue;
+      }
+
+      // Rate limiting messages
+      const rateMsg = rateLimiter.checkMessage();
+      if (!rateMsg.allowed) {
+        audit('rate_limit_message', { reason: rateMsg.reason });
+        await send(sock, senderJid, `⛔ ${rateMsg.reason}`);
+        continue;
+      }
+
+      await handleMessage(sock, senderJid, text.trim());
     }
   });
 }
 
 async function handleMessage(sock, jid, text) {
+  audit('message_received', { length: text.length });
+
   // Confirmation d'une exécution en attente
   if (agent.pendingExecution && isConfirmation(text)) {
     const exec = agent.consumePendingExecution();
+
+    // Validation chemin projet
+    const pathCheck = validateProjectPath(exec.projectPath);
+    if (!pathCheck.valid) {
+      audit('exec_blocked_path', { project: exec.project, reason: pathCheck.reason });
+      await send(sock, jid, `🚫 *Chemin refusé* : ${pathCheck.reason}\nProjet : ${exec.project}`);
+      return;
+    }
+
+    // Détection prompt dangereux
+    const danger = detectDangerousPrompt(exec.prompt);
+    if (danger) {
+      audit('exec_blocked_dangerous', { project: exec.project, reason: danger });
+      await send(
+        sock,
+        jid,
+        `🚫 *Action bloquée* : pattern dangereux détecté (${danger}).\nReformule sans cette opération.`
+      );
+      return;
+    }
+
+    // Rate limit exécutions
+    const rateExec = rateLimiter.checkExecution();
+    if (!rateExec.allowed) {
+      audit('rate_limit_exec', { reason: rateExec.reason });
+      await send(sock, jid, `⛔ ${rateExec.reason}`);
+      return;
+    }
+
+    // Pas de double exécution sur le même projet
+    if (activeSessions.has(exec.project)) {
+      audit('exec_blocked_concurrent', { project: exec.project });
+      await send(sock, jid, `⏳ Une session est déjà active sur *${exec.project}*. Attends qu'elle finisse.`);
+      return;
+    }
+
+    audit('exec_start', { project: exec.project, path: pathCheck.realPath });
     await send(sock, jid, `🚀 Lancement sur *${exec.project}*...\nJe t'envoie un update toutes les minutes.`);
 
     activeSessions.add(exec.project);
+    const startTime = Date.now();
     try {
       const result = await runClaude(
         exec.prompt,
-        exec.projectPath,
-        (update) => send(sock, jid, update)
+        pathCheck.realPath,
+        (update) => send(sock, jid, redactSecrets(update))
       );
-      await send(sock, jid, result);
+      const durationMs = Date.now() - startTime;
+      audit('exec_end', { project: exec.project, durationMs, ok: true });
+      await send(sock, jid, redactSecrets(result));
+    } catch (err) {
+      audit('exec_error', { project: exec.project, error: err.message });
+      await send(sock, jid, `❌ Erreur : ${err.message}`);
     } finally {
       activeSessions.delete(exec.project);
     }
@@ -97,21 +183,31 @@ async function handleMessage(sock, jid, text) {
 
   // Refus d'une exécution en attente
   if (agent.pendingExecution && isRefusal(text)) {
+    audit('exec_refused');
     agent.consumePendingExecution();
     await send(sock, jid, '↩️ Annulé. Dis-moi ce que tu veux changer.');
     return;
   }
 
-  // Commande reset
-  const response = await agent.chat(text);
+  // Conversation normale avec l'agent Gemini
+  let response;
+  try {
+    response = await agent.chat(text);
+  } catch (err) {
+    audit('agent_error', { error: err.message });
+    await send(sock, jid, `⚠️ Erreur Gemini : ${err.message}`);
+    return;
+  }
 
   if (response.type === 'reset') {
     agent.resetHistory();
+    audit('history_reset');
     await send(sock, jid, '🔄 Conversation réinitialisée.');
     return;
   }
 
   if (response.type === 'confirm') {
+    audit('exec_pending', { project: response.project });
     const confirmMsg =
       `📋 *Voici ce que je vais faire :*\n\n${response.summary}\n\n` +
       `📁 Projet : *${response.project}*\n` +
@@ -129,6 +225,7 @@ async function send(sock, jid, text) {
     await sock.sendMessage(jid, { text });
   } catch (err) {
     console.error('Erreur envoi message:', err.message);
+    audit('send_error', { error: err.message });
   }
 }
 
@@ -142,5 +239,18 @@ function isRefusal(text) {
   return /^(non|no|nop|nope|annule?|cancel|stop|❌|attends?)$/i.test(text.trim());
 }
 
+// Gestion arrêt propre
+process.on('SIGTERM', () => {
+  audit('shutdown', { signal: 'SIGTERM' });
+  process.exit(0);
+});
+process.on('SIGINT', () => {
+  audit('shutdown', { signal: 'SIGINT' });
+  process.exit(0);
+});
+
 console.log('🤖 Démarrage du WhatsApp Agent...');
-startBot().catch(console.error);
+startBot().catch((err) => {
+  audit('boot_error', { error: err.message });
+  console.error(err);
+});

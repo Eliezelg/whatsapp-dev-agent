@@ -1,27 +1,71 @@
 [Unit]
-Description=WhatsApp Dev Agent (Gemini Flash + Claude Code)
-After=network.target
+Description=WhatsApp Dev Agent (hardened)
+After=network-online.target
 Wants=network-online.target
 
 [Service]
 Type=simple
-User=root
+User=wa-agent
+Group=wa-agent
 WorkingDirectory=/opt/whatsapp-agent
 ExecStart=/usr/bin/node index.js
 Restart=always
 RestartSec=10
+
+# Variables d'environnement
+EnvironmentFile=/etc/whatsapp-agent.env
+
+# === Hardening systemd ===
+NoNewPrivileges=true
+
+# Filesystem
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/opt/whatsapp-agent/auth /opt/whatsapp-agent/logs
+PrivateTmp=true
+PrivateDevices=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectKernelLogs=true
+ProtectControlGroups=true
+ProtectClock=true
+ProtectHostname=true
+ProtectProc=invisible
+
+# Network — uniquement IPv4/IPv6 (pas de raw sockets)
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+
+# Capabilities — aucune privilégiée
+CapabilityBoundingSet=
+AmbientCapabilities=
+
+# System calls — bloque les dangereux
+SystemCallArchitectures=native
+SystemCallFilter=@system-service
+SystemCallFilter=~@privileged @resources @mount @swap @reboot @raw-io @cpu-emulation @debug @keyring @module @obsolete
+
+# Resource limits
+LimitNOFILE=4096
+LimitNPROC=512
+MemoryMax=2G
+TasksMax=200
+
+# Lock memory pour empêcher swap des secrets
+LockPersonality=true
+MemoryDenyWriteExecute=true
+RestrictRealtime=true
+RestrictNamespaces=true
+RestrictSUIDSGID=true
+RemoveIPC=true
+
+# Auto-restart limits (anti boucle de crash)
+StartLimitIntervalSec=600
+StartLimitBurst=5
+
+# Logs
 StandardOutput=journal
 StandardError=journal
 SyslogIdentifier=whatsapp-agent
-
-# Variables d'environnement — copier .env dans /etc/whatsapp-agent.env
-EnvironmentFile=/etc/whatsapp-agent.env
-
-# Sécurité
-NoNewPrivileges=true
-ProtectSystem=full
-ProtectHome=read-only
-ReadWritePaths=/opt/whatsapp-agent/auth
 
 [Install]
 WantedBy=multi-user.target
