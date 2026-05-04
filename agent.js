@@ -31,7 +31,7 @@ export class Agent {
     // systemInstruction doit être passé au moment de getGenerativeModel(), pas
     // dans startChat(). Format : { parts: [{ text }] }, pas une string brute.
     this.model = this.genAI.getGenerativeModel({
-      model: 'gemini-2.0-flash',
+      model: process.env.GEMINI_MODEL || 'gemini-2.5-flash',
       systemInstruction: { parts: [{ text: SYSTEM_PROMPT }] },
     });
     this.history = [];
