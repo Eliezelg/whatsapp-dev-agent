@@ -41,8 +41,9 @@ const API_KEY_HELPER = process.env.CLAUDE_API_KEY_HELPER;
 /**
  * Prépare CLAUDE_HOME au boot :
  * - crée le dossier s'il n'existe pas
- * - installe settings.json avec apiKeyHelper (si configuré)
- * Ainsi Claude Code n'a pas besoin de ANTHROPIC_API_KEY dans son env.
+ * - installe settings.json avec apiKeyHelper UNIQUEMENT si configuré ET
+ *   qu'aucun settings.json n'existe (ne pas écraser une session Claude Max
+ *   déjà initialisée par `claude setup-token`).
  */
 function setupClaudeHome() {
   if (!existsSync(CLAUDE_HOME)) {
@@ -54,8 +55,10 @@ function setupClaudeHome() {
   }
   if (API_KEY_HELPER) {
     const settingsPath = join(claudeDir, 'settings.json');
-    const settings = { apiKeyHelper: API_KEY_HELPER };
-    writeFileSync(settingsPath, JSON.stringify(settings, null, 2), { mode: 0o600 });
+    if (!existsSync(settingsPath)) {
+      const settings = { apiKeyHelper: API_KEY_HELPER };
+      writeFileSync(settingsPath, JSON.stringify(settings, null, 2), { mode: 0o600 });
+    }
   }
 }
 setupClaudeHome();
@@ -82,16 +85,16 @@ export async function runClaude(prompt, projectPath, onUpdate) {
     let proc;
     try {
       // Build env :
-      // - Si CLAUDE_API_KEY_HELPER défini → la clé est lue par le helper, PAS dans env.
-      //   Cela rend les attaques "echo $ANTHROPIC_API_KEY" et "console.log(process.env)"
-      //   inoffensives (la clé n'existe pas dans le process Claude Code).
-      // - Sinon (fallback dev) → on passe la clé en env.
+      // - Si CLAUDE_API_KEY_HELPER défini → la clé est lue par le helper.
+      // - Si ANTHROPIC_API_KEY définie → on la passe en env (mode API key).
+      // - Sinon → mode "compte Claude Max/Pro" : Claude Code lit son token
+      //   de session depuis ~/.claude/ (HOME = CLAUDE_HOME). Aucune clé en env.
       const childEnv = {
         PATH: MIN_PATH,
         HOME: CLAUDE_HOME,
         USER: 'wa-agent',
       };
-      if (!API_KEY_HELPER) {
+      if (!API_KEY_HELPER && process.env.ANTHROPIC_API_KEY) {
         childEnv.ANTHROPIC_API_KEY = process.env.ANTHROPIC_API_KEY;
       }
 
