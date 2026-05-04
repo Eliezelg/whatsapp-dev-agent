@@ -522,15 +522,49 @@ Le module `security.js` détecte et bloque automatiquement :
 Si Gemini Flash propose une de ces actions, l'agent répond **🚫 Action
 bloquée** sans exécuter.
 
-### 7.3 Whitelist des env vars
+### 7.3 Whitelist des env vars + apiKeyHelper (prod)
 
 `runner.js` ne passe à Claude Code que :
 
-- `PATH`, `HOME`, `USER`
-- `ANTHROPIC_API_KEY`
+- `PATH` (whitelist `/usr/local/bin:/usr/bin:/bin`)
+- `HOME` (CLAUDE_HOME isolé, défaut `<projet>/.claude-runtime-home`)
+- `USER` (`wa-agent`)
+- `ANTHROPIC_API_KEY` **uniquement si `CLAUDE_API_KEY_HELPER` n'est pas défini**
 
-**Pas** de `GEMINI_API_KEY`, `WHATSAPP_OWNER`, autres secrets — Claude Code
-ne peut pas les exfiltrer même via prompt injection.
+**Pas** de `GEMINI_API_KEY`, `WHATSAPP_OWNER`, autres secrets.
+
+**Recommandation prod : utiliser apiKeyHelper.**
+
+Avec `ANTHROPIC_API_KEY` en env, un attaquant via prompt injection peut faire
+imprimer la clé via `process.env.ANTHROPIC_API_KEY` ou base64-encoder et
+contourner `redactSecrets`. Avec apiKeyHelper, la clé n'est **pas** dans
+`process.env` du process Claude Code — elle est lue par un script externe à
+la demande.
+
+```bash
+# 1. Stocker la clé dans un fichier chmod 600
+echo "sk-ant-..." > /opt/whatsapp-agent/.anthropic-key
+chown wa-agent:wa-agent /opt/whatsapp-agent/.anthropic-key
+chmod 600 /opt/whatsapp-agent/.anthropic-key
+
+# 2. Activer le helper dans /etc/whatsapp-agent.env
+echo 'CLAUDE_API_KEY_HELPER=/opt/whatsapp-agent/scripts/anthropic-key-helper.sh' \
+  >> /etc/whatsapp-agent.env
+
+# 3. Retirer ANTHROPIC_API_KEY de /etc/whatsapp-agent.env (plus nécessaire)
+#    Le runner détecte CLAUDE_API_KEY_HELPER et NE la passe pas en env.
+
+# 4. Permissions sur le helper
+chmod 750 /opt/whatsapp-agent/scripts/anthropic-key-helper.sh
+chown root:wa-agent /opt/whatsapp-agent/scripts/anthropic-key-helper.sh
+
+# 5. Restart
+systemctl restart whatsapp-agent
+```
+
+`runner.js` génère automatiquement `<CLAUDE_HOME>/.claude/settings.json` au
+boot avec `apiKeyHelper` configuré. Claude Code lira la clé via ce script
+à chaque appel API.
 
 ### 7.4 Limites runtime
 

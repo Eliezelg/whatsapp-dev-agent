@@ -1,5 +1,6 @@
 import { spawn, execSync } from 'child_process';
-import { resolve } from 'path';
+import { resolve, join } from 'path';
+import { existsSync, mkdirSync, writeFileSync } from 'fs';
 import { redactSecrets } from './security.js';
 
 const UPDATE_INTERVAL_MS = 60_000;
@@ -32,6 +33,33 @@ function resolveClaudeBin() {
 // Override via CLAUDE_HOME si besoin.
 const CLAUDE_HOME = process.env.CLAUDE_HOME || resolve(process.cwd(), '.claude-runtime-home');
 
+// API key helper : si défini, on NE passe PAS ANTHROPIC_API_KEY en env.
+// Claude Code lit la clé via le helper script à la demande.
+// Voir scripts/anthropic-key-helper.sh.
+const API_KEY_HELPER = process.env.CLAUDE_API_KEY_HELPER;
+
+/**
+ * Prépare CLAUDE_HOME au boot :
+ * - crée le dossier s'il n'existe pas
+ * - installe settings.json avec apiKeyHelper (si configuré)
+ * Ainsi Claude Code n'a pas besoin de ANTHROPIC_API_KEY dans son env.
+ */
+function setupClaudeHome() {
+  if (!existsSync(CLAUDE_HOME)) {
+    mkdirSync(CLAUDE_HOME, { recursive: true, mode: 0o700 });
+  }
+  const claudeDir = join(CLAUDE_HOME, '.claude');
+  if (!existsSync(claudeDir)) {
+    mkdirSync(claudeDir, { recursive: true, mode: 0o700 });
+  }
+  if (API_KEY_HELPER) {
+    const settingsPath = join(claudeDir, 'settings.json');
+    const settings = { apiKeyHelper: API_KEY_HELPER };
+    writeFileSync(settingsPath, JSON.stringify(settings, null, 2), { mode: 0o600 });
+  }
+}
+setupClaudeHome();
+
 /**
  * Lance Claude Code CLI dans le dossier du projet.
  *
@@ -53,17 +81,24 @@ export async function runClaude(prompt, projectPath, onUpdate) {
 
     let proc;
     try {
+      // Build env :
+      // - Si CLAUDE_API_KEY_HELPER défini → la clé est lue par le helper, PAS dans env.
+      //   Cela rend les attaques "echo $ANTHROPIC_API_KEY" et "console.log(process.env)"
+      //   inoffensives (la clé n'existe pas dans le process Claude Code).
+      // - Sinon (fallback dev) → on passe la clé en env.
+      const childEnv = {
+        PATH: MIN_PATH,
+        HOME: CLAUDE_HOME,
+        USER: 'wa-agent',
+      };
+      if (!API_KEY_HELPER) {
+        childEnv.ANTHROPIC_API_KEY = process.env.ANTHROPIC_API_KEY;
+      }
+
       proc = spawn(CLAUDE_BIN, args, {
         cwd: projectPath,
         timeout: MAX_TIMEOUT_MS,
-        env: {
-          // PATH minimal — pas le PATH de l'utilisateur courant
-          PATH: MIN_PATH,
-          HOME: CLAUDE_HOME,
-          USER: 'wa-agent',
-          ANTHROPIC_API_KEY: process.env.ANTHROPIC_API_KEY,
-          // Pas de GEMINI_API_KEY, WHATSAPP_*, ALLOWED_PROJECT_ROOTS, etc.
-        },
+        env: childEnv,
         shell: false,
         stdio: ['pipe', 'pipe', 'pipe'],
       });
