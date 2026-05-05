@@ -207,7 +207,15 @@ async function handleMessage(sock, jid, text) {
     response = await agent.chat(text);
   } catch (err) {
     audit('agent_error', { error: err.message });
-    await send(sock, jid, `⚠️ Erreur Gemini : ${err.message}`);
+    // Message lisible plutôt qu'une stack trace Gemini
+    const msg = err?.message || String(err);
+    let userMsg;
+    if (/\b503\b/.test(msg)) userMsg = '⚠️ Gemini saturé (503). Réessaie dans 30s.';
+    else if (/\b429\b/.test(msg)) userMsg = '⚠️ Quota Gemini atteint. Réessaie dans 1min.';
+    else if (/\b403\b/.test(msg)) userMsg = '⚠️ Accès Gemini refusé. Vérifie la clé API.';
+    else if (/\b401\b/.test(msg)) userMsg = '⚠️ Clé Gemini invalide.';
+    else userMsg = `⚠️ Erreur Gemini : ${msg.slice(0, 200)}`;
+    await send(sock, jid, userMsg);
     return;
   }
 

@@ -57,7 +57,26 @@ export class Agent {
       history: this.history.slice(0, -1),
     });
 
-    const result = await chat.sendMessage(contextualMessage);
+    // Retry sur 429/503 (Gemini saturé) avec backoff exponentiel.
+    // Les 4xx sauf 429 ne sont pas retryables (clé invalide, quota dépassé...).
+    let result;
+    let lastErr;
+    for (let attempt = 1; attempt <= 4; attempt++) {
+      try {
+        result = await chat.sendMessage(contextualMessage);
+        break;
+      } catch (err) {
+        lastErr = err;
+        const msg = err?.message || String(err);
+        const transient = /\b(429|503|500|502|504|fetch failed|ECONNRESET|ETIMEDOUT)\b/i.test(msg);
+        if (!transient || attempt === 4) throw err;
+        const delay = 1000 * Math.pow(2, attempt - 1); // 1s, 2s, 4s
+        console.warn(`[gemini] transient error (attempt ${attempt}/4), retry in ${delay}ms: ${msg.slice(0, 120)}`);
+        await new Promise((r) => setTimeout(r, delay));
+      }
+    }
+    if (!result) throw lastErr;
+
     const responseText = result.response.text().trim();
 
     this.history.push({ role: 'model', parts: [{ text: responseText }] });
