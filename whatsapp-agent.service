@@ -16,12 +16,17 @@ RestartSec=10
 EnvironmentFile=/etc/whatsapp-agent.env
 
 # === Hardening systemd ===
+# NoNewPrivileges + capabilities vides + ProtectSystem couvrent l'essentiel.
+# On NE met PAS SystemCallFilter ni MemoryDenyWriteExecute ni RestrictRealtime
+# parce que Claude Code (Bun-compiled) appelle sched_setscheduler au boot
+# et fait du JIT mémoire (V8) → SIGSYS / segfault sinon.
+
 NoNewPrivileges=true
 
 # Filesystem
 ProtectSystem=strict
 ProtectHome=true
-ReadWritePaths=/opt/whatsapp-agent/auth /opt/whatsapp-agent/logs
+ReadWritePaths=/opt/whatsapp-agent
 PrivateTmp=true
 PrivateDevices=true
 ProtectKernelTunables=true
@@ -39,21 +44,14 @@ RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
 CapabilityBoundingSet=
 AmbientCapabilities=
 
-# System calls — bloque les dangereux
-SystemCallArchitectures=native
-SystemCallFilter=@system-service
-SystemCallFilter=~@privileged @resources @mount @swap @reboot @raw-io @cpu-emulation @debug @keyring @module @obsolete
-
 # Resource limits
 LimitNOFILE=4096
 LimitNPROC=512
 MemoryMax=2G
 TasksMax=200
 
-# Lock memory pour empêcher swap des secrets
+# Defense-in-depth (ces options ne cassent pas Claude Code)
 LockPersonality=true
-MemoryDenyWriteExecute=true
-RestrictRealtime=true
 RestrictNamespaces=true
 RestrictSUIDSGID=true
 RemoveIPC=true
@@ -66,6 +64,7 @@ StartLimitBurst=5
 StandardOutput=journal
 StandardError=journal
 SyslogIdentifier=whatsapp-agent
+Environment=HOME=/opt/whatsapp-agent
 
 [Install]
 WantedBy=multi-user.target
