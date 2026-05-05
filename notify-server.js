@@ -81,14 +81,25 @@ export function startNotifyServer(sock, ownerJid) {
         return;
       }
 
-      try {
-        recentNotifications.push(now);
-        await sock.sendMessage(ownerJid, { text: redactSecrets(text) });
-        res.writeHead(200).end('ok');
-      } catch (err) {
-        console.error('[notify] send failed:', err.message);
-        res.writeHead(500).end('send failed');
+      // Retry up to 3 times with exponential backoff because WhatsApp socket
+      // can momentarily be in a transitional state ('Connection Closed').
+      recentNotifications.push(now);
+      const safeText = redactSecrets(text);
+      let lastErr = null;
+      for (let attempt = 1; attempt <= 3; attempt++) {
+        try {
+          await sock.sendMessage(ownerJid, { text: safeText });
+          res.writeHead(200).end('ok');
+          return;
+        } catch (err) {
+          lastErr = err;
+          console.error(`[notify] send attempt ${attempt}/3 failed:`, err.message);
+          if (attempt < 3) {
+            await new Promise((r) => setTimeout(r, attempt * 2000));
+          }
+        }
       }
+      res.writeHead(500).end(`send failed: ${lastErr?.message || 'unknown'}`);
     });
 
     req.on('error', () => {
