@@ -1,6 +1,10 @@
 {
-  "default": "tzedakal",
+  "default": "vps",
   "projects": {
+    "vps": {
+      "path": "/opt/projects/vps",
+      "description": "VPS sysadmin / audit sécu / Asterisk / Claude Code shell access"
+    },
     "tzedakal": {
       "path": "/workspaces/tzedakal",
       "description": "NestJS + Next.js 15 + PostgreSQL"
