@@ -1,0 +1,27 @@
+[Unit]
+Description=Security audit (light, daily)
+After=network-online.target whatsapp-agent.service
+Wants=network-online.target
+Requires=whatsapp-agent.service
+
+[Service]
+Type=oneshot
+User=root
+ExecStart=/usr/local/bin/security-audit.sh light
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=security-audit-light
+
+# Limites
+TimeoutStartSec=2100
+MemoryMax=2G
+TasksMax=200
+
+# Hardening (modéré : ce service a besoin de root pour journalctl + apt)
+NoNewPrivileges=false
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+
+[Install]
+WantedBy=multi-user.target

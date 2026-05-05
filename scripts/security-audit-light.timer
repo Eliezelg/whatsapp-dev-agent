@@ -1,0 +1,17 @@
+[Unit]
+Description=Daily light security audit at 17:30 Jerusalem time
+
+[Timer]
+# 17:30 chaque jour, fuseau Asia/Jerusalem (gère DST automatiquement)
+OnCalendar=*-*-* 17:30:00 Asia/Jerusalem
+
+# Si le VPS était down à l'heure prévue, lance dès qu'il revient
+Persistent=true
+
+# Délai aléatoire 0-30s pour éviter pile-up cron
+RandomizedDelaySec=30
+
+Unit=security-audit-light.service
+
+[Install]
+WantedBy=timers.target

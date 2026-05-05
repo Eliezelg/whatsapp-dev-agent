@@ -1,0 +1,25 @@
+[Unit]
+Description=Security audit (full, weekly)
+After=network-online.target whatsapp-agent.service
+Wants=network-online.target
+Requires=whatsapp-agent.service
+
+[Service]
+Type=oneshot
+User=root
+ExecStart=/usr/local/bin/security-audit.sh full
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=security-audit-full
+
+TimeoutStartSec=2100
+MemoryMax=2G
+TasksMax=200
+
+NoNewPrivileges=false
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+
+[Install]
+WantedBy=multi-user.target

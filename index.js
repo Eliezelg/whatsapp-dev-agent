@@ -5,6 +5,7 @@ import qrcode from 'qrcode-terminal';
 import pino from 'pino';
 import { Agent } from './agent.js';
 import { runClaude } from './runner.js';
+import { startNotifyServer } from './notify-server.js';
 import {
   rateLimiter,
   validateProjectPath,
@@ -59,6 +60,11 @@ async function startBot() {
     if (connection === 'open') {
       console.log('✅ WhatsApp connecté !');
       audit('connection_open');
+      // Lance le notify server (idempotent : ne fait rien si déjà démarré)
+      if (!global.__notifyStarted) {
+        startNotifyServer(sock, OWNER_JID);
+        global.__notifyStarted = true;
+      }
     }
 
     if (connection === 'close') {

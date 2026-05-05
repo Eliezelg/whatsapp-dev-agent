@@ -1,0 +1,18 @@
+[Unit]
+Description=Weekly full security audit, Sunday 17:30 Jerusalem time
+
+[Timer]
+# Dimanche 17:30 Jerusalem
+OnCalendar=Sun *-*-* 17:30:00 Asia/Jerusalem
+
+# Persistent : si le dimanche le VPS était down, lance dès qu'il revient
+Persistent=true
+
+# Délai 60s après le timer light pour ne pas se chevaucher
+# (le light tourne aussi à 17:30 le dimanche → le full le remplacera ce jour-là)
+RandomizedDelaySec=60
+
+Unit=security-audit-full.service
+
+[Install]
+WantedBy=timers.target
