@@ -36,6 +36,10 @@ let activeSessions = new Set();
 
 audit('boot', { owner: OWNER_JID, pid: process.pid });
 
+// Reference vivante de la socket courante. Reassignee a chaque (re)connexion
+// pour que le notify-server n'utilise jamais une socket morte (stale socket).
+let currentSock = null;
+
 async function startBot() {
   const { state, saveCreds } = await useMultiFileAuthState('./auth');
   const { version } = await fetchLatestBaileysVersion();
@@ -48,6 +52,7 @@ async function startBot() {
     browser: ['WhatsApp Agent', 'Chrome', '1.0'],
   });
 
+  currentSock = sock;
   sock.ev.on('creds.update', saveCreds);
 
   sock.ev.on('connection.update', ({ connection, lastDisconnect, qr }) => {
@@ -62,7 +67,7 @@ async function startBot() {
       audit('connection_open');
       // Lance le notify server (idempotent : ne fait rien si déjà démarré)
       if (!global.__notifyStarted) {
-        startNotifyServer(sock, OWNER_JID);
+        startNotifyServer(() => currentSock, OWNER_JID);
         global.__notifyStarted = true;
       }
     }

@@ -18,7 +18,9 @@ const MAX_BODY_BYTES = 8192;
 
 const recentNotifications = [];
 
-export function startNotifyServer(sock, ownerJid) {
+export function startNotifyServer(getSock, ownerJid) {
+  // getSock() retourne TOUJOURS la socket courante (vivante), pas une socket
+  // capturee au boot. Evite les echecs 'Connection Closed' apres reconnexion.
   if (!NOTIFY_TOKEN) {
     console.warn('⚠️ NOTIFY_TOKEN non défini → endpoint /notify désactivé');
     return null;
@@ -88,6 +90,8 @@ export function startNotifyServer(sock, ownerJid) {
       let lastErr = null;
       for (let attempt = 1; attempt <= 3; attempt++) {
         try {
+          const sock = getSock();
+          if (!sock) throw new Error('socket not ready');
           await sock.sendMessage(ownerJid, { text: safeText });
           res.writeHead(200).end('ok');
           return;
