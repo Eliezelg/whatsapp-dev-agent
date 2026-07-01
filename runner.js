@@ -1,7 +1,7 @@
 import { spawn, execSync } from 'child_process';
 import { resolve, join } from 'path';
 import { existsSync, mkdirSync, writeFileSync } from 'fs';
-import { redactSecrets } from './security.js';
+import { redactSecrets, audit } from './security.js';
 
 const UPDATE_INTERVAL_MS = 60_000;
 const MAX_TIMEOUT_MS = 30 * 60 * 1000; // 30 min
@@ -63,22 +63,49 @@ function setupClaudeHome() {
 }
 setupClaudeHome();
 
+const ENOENT_RETRY_DELAY_MS = 2000; // delai avant l'unique retry sur ENOENT transitoire
+
 /**
- * Lance Claude Code CLI dans le dossier du projet.
- *
- * SÉCURITÉ :
- * - Binaire `claude` résolu en chemin absolu au boot (anti PATH hijack).
- * - Prompt via stdin (pas argv) → anti-injection de flags CLI.
- * - PATH et HOME minimaux passés à l'enfant.
- * - shell: false, stdio piped, kill SIGKILL sur dépassement.
- * - Idle timeout 5 min, output max 10 Mo, total max 30 min.
- * - Updates redacted des secrets avant WhatsApp.
+ * Lance Claude Code CLI dans le dossier du projet, avec un unique retry si le
+ * spawn echoue avec ENOENT (glitch transitoire observe le 2026-07-02 : binaire
+ * accessible avant/apres, cause racine non identifiee). Le contrat public reste
+ * `runClaude(prompt, projectPath, onUpdate)`.
  *
  * @param {string} prompt - L'instruction utilisateur (passée via stdin).
  * @param {string} projectPath - Chemin du projet (déjà validé en amont).
  * @param {(msg: string) => void} onUpdate - Callback updates intermédiaires.
+ * @returns {Promise<{status: 'ok'|'killed'|'error', text: string}>}
+ *   status : 'ok' = terminaison propre (exit 0 ou code != 0 sans kill),
+ *            'killed' = tué par limite (idle/output/signal),
+ *            'error' = echec spawn/stdin/process (jamais lance ou crash immediat).
+ *   text : message formaté prêt à afficher à l'utilisateur (secrets redactés).
  */
 export async function runClaude(prompt, projectPath, onUpdate) {
+  const first = await runClaudeOnce(prompt, projectPath, onUpdate);
+  // Retry unique et borné : uniquement sur ENOENT au spawn (transitoire), pas
+  // sur les autres erreurs (qui traduisent un vrai probleme de config/binaire).
+  if (first.status === 'error' && first.enoent) {
+    audit('claude_spawn_enoent_retry', { project: projectPath });
+    await new Promise((r) => setTimeout(r, ENOENT_RETRY_DELAY_MS));
+    const second = await runClaudeOnce(prompt, projectPath, onUpdate);
+    return stripInternal(second);
+  }
+  return stripInternal(first);
+}
+
+// Retire les champs internes (enoent) avant de rendre le resultat au dispatcher.
+function stripInternal({ status, text }) {
+  return { status, text };
+}
+
+/**
+ * Une seule exécution de Claude Code. Résout TOUJOURS (jamais de rejet) avec un
+ * objet structuré. Tous les timers sont nettoyés via finish() sur chaque chemin
+ * de sortie — pas de fuite de setInterval possible.
+ *
+ * @returns {Promise<{status: string, text: string, enoent?: boolean}>}
+ */
+function runClaudeOnce(prompt, projectPath, onUpdate) {
   return new Promise((resolveOuter) => {
     const args = ['--dangerously-skip-permissions', '--print'];
 
@@ -106,16 +133,22 @@ export async function runClaude(prompt, projectPath, onUpdate) {
         stdio: ['pipe', 'pipe', 'pipe'],
       });
     } catch (err) {
-      resolveOuter(`❌ Impossible de lancer Claude Code : ${err.message}`);
+      // spawn synchrone qui throw (rare) — classe ENOENT pour beneficier du retry.
+      resolveOuter({
+        status: 'error',
+        text: `❌ Impossible de lancer Claude Code : ${err.message}`,
+        enoent: err.code === 'ENOENT',
+      });
       return;
     }
 
     let output = '';
     let outputBytes = 0;
     let killed = false;
-    let lastDataAt = Date.now();
     let resolved = false;
 
+    // Resultat structure calcule une seule fois, quel que soit l'ordre des
+    // evenements (error/close/stdin-error peuvent tous survenir sur un echec).
     const finish = (result) => {
       if (resolved) return;
       resolved = true;
@@ -124,6 +157,8 @@ export async function runClaude(prompt, projectPath, onUpdate) {
       resolveOuter(result);
     };
 
+    let lastDataAt = Date.now();
+
     // Gestion EPIPE : si claude crash avant lecture stdin
     proc.stdin.on('error', (err) => {
       if (err.code !== 'EPIPE') console.error('runner stdin error:', err.message);
@@ -131,11 +166,16 @@ export async function runClaude(prompt, projectPath, onUpdate) {
 
     proc.stdin.write(prompt, (err) => {
       if (err) {
+        // EPIPE ici = le process est deja mort (souvent double avec proc.on error).
+        // On ne finish PAS ici sur EPIPE : on laisse proc.on('error')/('close')
+        // produire le resultat classifie (evite un finish premature qui masquerait
+        // un ENOENT retryable). Sur une autre erreur stdin, on finish en 'error'.
+        if (err.code === 'EPIPE') return;
         if (!killed) {
           killed = true;
           try { proc.kill('SIGKILL'); } catch {}
         }
-        finish(`❌ Erreur écriture stdin : ${err.message}`);
+        finish({ status: 'error', text: `❌ Erreur écriture stdin : ${err.message}` });
         return;
       }
       proc.stdin.end();
@@ -179,7 +219,13 @@ export async function runClaude(prompt, projectPath, onUpdate) {
     });
 
     proc.on('error', (err) => {
-      finish(`❌ Erreur process Claude Code : ${err.message}`);
+      // Echec de spawn (ENOENT le plus souvent) : classe en 'error' + flag enoent
+      // pour que le wrapper runClaude() puisse retenter une fois.
+      finish({
+        status: 'error',
+        text: `❌ Erreur process Claude Code : ${err.message}`,
+        enoent: err.code === 'ENOENT',
+      });
     });
   });
 }
@@ -193,19 +239,32 @@ function extractPreview(output) {
   return lines.slice(-10).join('\n');
 }
 
+/**
+ * Construit le resultat structure d'une terminaison de process (pas un echec
+ * de spawn — ceux-ci sont geres directement en 'error' dans runClaudeOnce).
+ * @returns {{status: 'ok'|'killed', text: string}}
+ *   'killed' = tué par une limite (idle/output/signal) ; 'ok' = terminaison
+ *   normale meme si exit code != 0 (Claude a tourné, c'est un resultat legitime
+ *   a montrer, pas une panne d'infra a alerter).
+ */
 function formatResult(output, exitCode, signal, killed) {
+  let label;
   let status;
-  if (killed) status = '⛔ Tué (limite atteinte)';
-  else if (signal) status = `⚠️ Tué par signal ${signal}`;
-  else if (exitCode === 0) status = '✅ Terminé';
-  else status = `⚠️ Terminé (code ${exitCode})`;
+  if (killed) { label = '⛔ Tué (limite atteinte)'; status = 'killed'; }
+  else if (signal) { label = `⚠️ Tué par signal ${signal}`; status = 'killed'; }
+  else if (exitCode === 0) { label = '✅ Terminé'; status = 'ok'; }
+  else { label = `⚠️ Terminé (code ${exitCode})`; status = 'ok'; }
 
   const clean = redactSecrets(output.trim());
 
-  if (!clean) return `${status}\n(aucune sortie)`;
-
-  const MAX = 3800;
-  if (clean.length <= MAX) return `${status}\n\n${clean}`;
-  const truncated = clean.slice(-MAX);
-  return `${status}\n\n[...tronqué]\n${truncated}`;
+  let text;
+  if (!clean) {
+    text = `${label}\n(aucune sortie)`;
+  } else {
+    const MAX = 3800;
+    text = clean.length <= MAX
+      ? `${label}\n\n${clean}`
+      : `${label}\n\n[...tronqué]\n${clean.slice(-MAX)}`;
+  }
+  return { status, text };
 }

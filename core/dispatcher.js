@@ -14,7 +14,11 @@
  *   pour empêcher deux canaux différents de lancer Claude Code sur le même projet en même temps.
  * @param {(event: string, details?: object) => void} deps.audit
  */
-export function createDispatcher({ agent, runClaude, validateProjectPath, detectDangerousPrompt, rateLimiter, activeSessions, audit }) {
+export function createDispatcher({ agent, runClaude, validateProjectPath, detectDangerousPrompt, rateLimiter, activeSessions, audit, alertEmail }) {
+  // alertEmail est optionnel : si non injecté (tests, ou email non configuré),
+  // les notifications d'échec sont simplement ignorées. Best-effort, jamais
+  // bloquant pour le flux principal.
+  const notifyFailure = typeof alertEmail === 'function' ? alertEmail : () => {};
   async function handleMessage(channel, senderId, text) {
     audit('message_received', { length: text.length, channel: channel.name });
 
@@ -106,13 +110,29 @@ export function createDispatcher({ agent, runClaude, validateProjectPath, detect
     activeSessions.add(exec.project);
     const startTime = Date.now();
     try {
+      // runClaude retourne { status: 'ok'|'killed'|'error', text }.
+      // Il ne rejette jamais : le catch ci-dessous ne couvre que des bugs
+      // internes du dispatcher, pas les échecs d'exécution Claude Code eux-mêmes.
       const result = await runClaude(exec.prompt, pathCheck.realPath, (update) => channel.send(senderId, update));
       const durationMs = Date.now() - startTime;
-      audit('exec_end', { project: exec.project, durationMs, ok: true, channel: channel.name });
-      await channel.send(senderId, result);
+      const ok = result.status === 'ok';
+      audit('exec_end', { project: exec.project, durationMs, status: result.status, ok, channel: channel.name });
+      await channel.send(senderId, result.text);
+      // Duplication email sur echec reel (kill par limite ou erreur spawn/process).
+      // Les succes (status 'ok', meme avec exit code != 0) ne generent pas d'alerte.
+      if (!ok) {
+        notifyFailure(
+          `Exécution ${result.status === 'killed' ? 'interrompue' : 'échouée'} sur ${exec.project}`,
+          `Projet : ${exec.project}\nCanal : ${channel.name}\nDurée : ${Math.round(durationMs / 1000)}s\n\n${result.text}`,
+        );
+      }
     } catch (err) {
       audit('exec_error', { project: exec.project, error: err.message, channel: channel.name });
       await channel.send(senderId, `❌ Erreur : ${err.message}`);
+      notifyFailure(
+        `Erreur interne dispatcher sur ${exec.project}`,
+        `Projet : ${exec.project}\nCanal : ${channel.name}\n\n${err.stack || err.message}`,
+      );
     } finally {
       activeSessions.delete(exec.project);
     }
