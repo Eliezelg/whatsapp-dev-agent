@@ -1,5 +1,15 @@
 # Observabilité & alerting — whatsapp-agent
 
+> **STATUT : IMPLÉMENTÉ le 2026-07-02.** Les 5 composants sont en production,
+> avec les corrections issues de la revue (retry ENOENT propre via résultat
+> structuré, détection d'erreur fiable, garde anti-faux-positif sur l'alerte
+> déconnexion, timeout 5s + anti-rafale sur le filet anti-crash). Un pré-requis
+> non prévu au spec initial a aussi été traité : la reconnexion concurrente
+>  (garde de génération + anti-concurrence). Ce document reste la
+> référence de conception ; l'implémentation réelle vit dans notify-email.js,
+> runner.js, core/dispatcher.js et index.js.
+
+
 ## Contexte
 
 Le 2026-07-01, une session de travail sur `whatsapp-agent` a révélé que la
