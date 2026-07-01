@@ -244,7 +244,22 @@ whatsapp-agent/
 | Variable | Obligatoire | Description |
 |----------|-------------|-------------|
 | `GEMINI_API_KEY` | ✅ | Clé API Google Gemini |
+| `GEMINI_MODEL` | ❌ | Modèle Gemini pour le dispatcher. Défaut : `gemini-2.5-flash-lite` (le moins cher, suffisant pour un rôle de classification/routing — le vrai travail est fait par Claude Code) |
 | `WHATSAPP_OWNER` | ✅ | JID WhatsApp autorisé (format : `33612345678@s.whatsapp.net`) |
+| `WHATSAPP_OWNER_LID` | ❌ | Identifiant `@lid` du owner. WhatsApp route certains messages (notamment le self-chat) avec ce format anonyme au lieu du numéro — à renseigner si `/help` ne répond plus alors que le service tourne (voir `security.js:isAuthorizedSender`) |
+
+## v2 — App Android (prévu, non actif)
+
+Un squelette d'API HTTP token-authentifiée (`channels/api.js`) existe pour
+préparer une future app Android minimale, mais n'est pas branché en
+production — pas de client à servir aujourd'hui. Pour l'activer un jour :
+ajouter une route dans `notify-server.js` qui appelle `handleApiDispatch`
+avec un token dédié (`API_TOKEN` dans `.env`, jamais réutiliser NOTIFY_TOKEN),
+brancher `dispatcher` (celui déjà créé dans `index.js` pour WhatsApp, ou un
+dispatcher dédié avec son propre Agent si on veut un historique de
+conversation séparé) et un `channel` dont `send()` répond effectivement au
+client (websocket, long-polling, ou push notification — à définir selon le
+transport choisi pour l'app).
 
 ## Licence
 
