@@ -248,6 +248,22 @@ whatsapp-agent/
 | `WHATSAPP_OWNER` | ✅ | JID WhatsApp autorisé (format : `33612345678@s.whatsapp.net`) |
 | `WHATSAPP_OWNER_LID` | ❌ | Identifiant `@lid` du owner. WhatsApp route certains messages (notamment le self-chat) avec ce format anonyme au lieu du numéro — à renseigner si `/help` ne répond plus alors que le service tourne (voir `security.js:isAuthorizedSender`) |
 
+## Règles Claude Code globales (`.claude-runtime-home/CLAUDE.md`)
+
+`runner.js` isole `HOME=CLAUDE_HOME` (défaut : `.claude-runtime-home/`, gitignored)
+pour le process Claude Code enfant — il ne lit jamais le `~/.claude/` réel du
+user système. Un `CLAUDE.md` placé dans `.claude-runtime-home/` sert donc de
+règles globales pour **toute** tâche Claude Code déclenchée via cet agent,
+quel que soit le projet ciblé (`vps`, `tzedakal`, `familink`, `gmah`, ou tout
+projet ajouté via `/add`) — équivalent d'un `~/.claude/CLAUDE.md` mais
+scopé à cet orchestrateur.
+
+⚠️ Ce dossier est gitignored (contient aussi les credentials de session
+Claude) : le `CLAUDE.md` qui s'y trouve n'est **pas versionné** et sera perdu
+si `.claude-runtime-home/` est supprimé/recréé. Le recréer manuellement dans
+ce cas (contenu de référence à garder à jour hors repo, ou dupliquer depuis
+un autre projet ayant la même politique).
+
 ## v2 — App Android (prévu, non actif)
 
 Un squelette d'API HTTP token-authentifiée (`channels/api.js`) existe pour
