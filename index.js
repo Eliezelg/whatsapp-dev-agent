@@ -7,6 +7,7 @@ import { Agent } from './agent.js';
 import { runClaude } from './runner.js';
 import { startNotifyServer } from './notify-server.js';
 import { createDispatcher } from './core/dispatcher.js';
+import { sendAlertEmail } from './notify-email.js';
 import {
   rateLimiter,
   validateProjectPath,
@@ -62,7 +63,47 @@ const dispatcher = createDispatcher({
   rateLimiter,
   activeSessions,
   audit,
+  alertEmail: sendAlertEmail,
 });
+
+// ─── Alerte de déconnexion WhatsApp prolongée ───────────────────────────────
+// Etat module-level (hors startBot, qui est rappelée à chaque reconnexion).
+const DISCONNECT_ALERT_MS = 5 * 60 * 1000; // seuil avant 1re alerte
+const DISCONNECT_REMINDER_MS = 30 * 60 * 1000; // rappel tant que déconnecté
+let disconnectAlertTimer = null;
+let disconnectedSince = null;
+let disconnectAlerted = false;
+
+function onDisconnected() {
+  if (disconnectedSince) return; // déjà en cours de suivi
+  disconnectedSince = Date.now();
+  disconnectAlerted = false;
+  disconnectAlertTimer = setTimeout(function fire() {
+    disconnectAlerted = true;
+    const minutes = Math.round((Date.now() - disconnectedSince) / 60000);
+    sendAlertEmail(
+      'WhatsApp déconnecté',
+      `whatsapp-agent est déconnecté de WhatsApp depuis ~${minutes}min et ne parvient pas à se reconnecter. Vérifie le service (journalctl -u whatsapp-agent) — un rescan du QR est peut-être nécessaire.`,
+    );
+    // Reprogramme un rappel tant que la déconnexion persiste.
+    disconnectAlertTimer = setTimeout(fire, DISCONNECT_REMINDER_MS);
+  }, DISCONNECT_ALERT_MS);
+}
+
+function onReconnected() {
+  if (!disconnectedSince) return;
+  const minutes = Math.round((Date.now() - disconnectedSince) / 60000);
+  const wasAlerted = disconnectAlerted;
+  if (disconnectAlertTimer) clearTimeout(disconnectAlertTimer);
+  disconnectAlertTimer = null;
+  disconnectedSince = null;
+  disconnectAlerted = false;
+  // N'envoie un email de reprise QUE si une alerte de déconnexion était partie
+  // (sinon les cycles close→open normaux de ~1s spammeraient des "reconnecté").
+  if (wasAlerted) {
+    sendAlertEmail('WhatsApp reconnecté', `whatsapp-agent a retrouvé la connexion WhatsApp après ~${minutes}min d'indisponibilité.`);
+  }
+}
 
 const whatsappChannel = {
   name: 'whatsapp',
@@ -100,6 +141,7 @@ async function startBot() {
     if (connection === 'open') {
       console.log('✅ WhatsApp connecté !');
       audit('connection_open');
+      onReconnected();
       // Lance le notify server (idempotent : ne fait rien si déjà démarré)
       if (!global.__notifyStarted) {
         startNotifyServer(() => currentSock, OWNER_JID);
@@ -111,6 +153,9 @@ async function startBot() {
       const shouldReconnect =
         new Boom(lastDisconnect?.error)?.output?.statusCode !== DisconnectReason.loggedOut;
       audit('connection_close', { shouldReconnect });
+      // Démarre le suivi de déconnexion (idempotent) : si la reconnexion ne
+      // réussit pas dans DISCONNECT_ALERT_MS, une alerte email partira.
+      onDisconnected();
       if (shouldReconnect) {
         // Anti-concurrence : une seule reconnexion en vol. Sans ce garde, des
         // 'close' rapproches empilent plusieurs startBot() -> sockets multiples.
@@ -191,6 +236,26 @@ async function send(sock, jid, text) {
     audit('send_error', { error: err.message });
   }
 }
+
+// ─── Filet anti-crash : alerte email best-effort avant de mourir ────────────
+// systemd (Restart=always) relance le process, mais l'utilisateur ne saurait
+// jamais qu'un crash a eu lieu sans cette alerte. Anti-rafale : on ne traite
+// qu'un seul crash (un uncaughtException peut en déclencher d'autres en
+// cascade). Le sendAlertEmail a son propre timeout 5s (pas de blocage infini).
+let crashing = false;
+function handleFatal(kind, err) {
+  if (crashing) return;
+  crashing = true;
+  const detail = err?.stack || String(err);
+  audit(kind, { error: err?.message || String(err) });
+  console.error(`[${kind}]`, detail);
+  sendAlertEmail(
+    kind === 'uncaught_exception' ? 'Crash inattendu' : 'Promise rejetée non gérée',
+    `whatsapp-agent va redémarrer (systemd) après :\n\n${detail}`,
+  ).finally(() => process.exit(1));
+}
+process.on('uncaughtException', (err) => handleFatal('uncaught_exception', err));
+process.on('unhandledRejection', (reason) => handleFatal('unhandled_rejection', reason));
 
 // Gestion arrêt propre
 process.on('SIGTERM', () => {
