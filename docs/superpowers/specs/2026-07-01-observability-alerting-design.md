@@ -12,12 +12,17 @@ ce genre de panne.
 ## Objectif
 
 Détecter et notifier par email (canal indépendant de WhatsApp) trois classes
-de pannes silencieuses :
+de pannes silencieuses, et absorber une quatrième classe de panne
+(transitoire, spawn du binaire Claude Code) sans notification si un simple
+retry suffit :
 1. WhatsApp déconnecté durablement (Baileys ne parvient pas à se reconnecter)
 2. Une tâche Claude Code échoue (erreur, timeout, kill) sans que l'échec soit
    visible autrement qu'en cherchant activement dans WhatsApp
 3. Le process `whatsapp-agent` lui-même crash de façon inattendue (exception
    non catchée) pendant qu'une tâche est en cours
+4. `spawn` du binaire `claude` échoue ponctuellement avec `ENOENT` malgré un
+   chemin valide (observé le 2026-07-02, cause racine non identifiée avec
+   certitude — voir Composant 5)
 
 ## Hors scope (décision explicite)
 
@@ -161,6 +166,47 @@ garantie de livraison, mais capture largement plus de cas que le
 comportement actuel (crash silencieux, aucune trace avant le prochain accès
 SSH manuel aux logs).
 
+## Composant 5 : retry sur `ENOENT` transitoire au spawn de Claude Code
+
+Incident observé le 2026-07-02 : `spawn /usr/bin/claude ENOENT` a fait
+échouer une exécution alors que le binaire était accessible et exécutable
+juste avant et juste après (vérifié manuellement : `which claude`, exécution
+directe, et inspection du namespace mount du process via `nsenter` — tout
+résolvait correctement). `CLAUDE_BIN` est fixé en dur via la variable d'env
+(`/etc/whatsapp-agent.env`), donc pas un problème de résolution dynamique.
+Cause racine non identifiée avec certitude (hypothèse : glitch I/O
+transitoire, possiblement lié à `ProtectSystem=strict` qui rend `/usr` en
+lecture seule via bind-mount — non confirmé). Plutôt que de creuser
+davantage un incident non reproductible, on absorbe la classe d'erreur par
+un retry ciblé.
+
+Dans `runner.js`, fonction `runClaude()` : sur l'événement `proc.on('error', ...)`
+avec `err.code === 'ENOENT'` spécifiquement (pas les autres codes d'erreur
+spawn, pour ne pas masquer de vrais problèmes de configuration), retry une
+seule fois après un court délai (ex: 2s) avant d'abandonner et de renvoyer
+l'erreur normalement. Si le retry échoue aussi, le comportement actuel
+s'applique (message d'erreur WhatsApp + duplication email via Composant 3,
+puisque ce n'est alors probablement plus transitoire).
+
+```js
+// runner.js — modification du callback proc.on('error', ...)
+// à l'intérieur de runClaude(), avec un paramètre interne _isRetry
+proc.on('error', (err) => {
+  if (err.code === 'ENOENT' && !_isRetry) {
+    setTimeout(() => {
+      runClaude(prompt, projectPath, onUpdate, /* _isRetry */ true).then(resolveOuter);
+    }, 2000);
+    return;
+  }
+  finish(`❌ Erreur process Claude Code : ${err.message}`);
+});
+```
+
+Note : signature exacte et gestion de l'état (`_isRetry`) à préciser dans le
+plan d'implémentation — l'idée est un retry unique borné, pas une boucle
+infinie, sans changer le contrat public de `runClaude(prompt, projectPath, onUpdate)`
+vu de l'extérieur (le paramètre de retry reste interne).
+
 ## Tests
 
 - `notify-email.js` : test avec un client Resend mocké (comme pattern
@@ -175,6 +221,11 @@ SSH manuel aux logs).
   d'implémentation plutôt que test automatisé, cohérent avec le traitement
   déjà réservé à `connection.update` existant (non testé aujourd'hui non
   plus).
+- `runner.js` (Composant 5) : test avec un `spawn` mocké qui émet une erreur
+  `ENOENT` sur le premier appel puis réussit sur le second — vérifie qu'un
+  seul retry a lieu (pas de boucle) et que le résultat final est celui du
+  retry réussi. Test complémentaire : deux échecs `ENOENT` consécutifs →
+  l'erreur remonte normalement après le retry unique (pas de 3e tentative).
 
 ## Risques résiduels acceptés
 
