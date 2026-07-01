@@ -6,6 +6,7 @@ import pino from 'pino';
 import { Agent } from './agent.js';
 import { runClaude } from './runner.js';
 import { startNotifyServer } from './notify-server.js';
+import { createDispatcher } from './core/dispatcher.js';
 import {
   rateLimiter,
   validateProjectPath,
@@ -17,6 +18,10 @@ import {
 } from './security.js';
 
 const OWNER_JID = process.env.WHATSAPP_OWNER;
+// (optionnel) Identifiant @lid du owner — WhatsApp route certains messages
+// (notamment le self-chat) avec ce format anonyme au lieu de @s.whatsapp.net.
+// Voir security.js:isAuthorizedSender pour le détail.
+const OWNER_LID = process.env.WHATSAPP_OWNER_LID || undefined;
 if (!OWNER_JID) {
   console.error('❌ WHATSAPP_OWNER manquant dans .env (ex: 33612345678@s.whatsapp.net)');
   process.exit(1);
@@ -39,6 +44,21 @@ audit('boot', { owner: OWNER_JID, pid: process.pid });
 // Reference vivante de la socket courante. Reassignee a chaque (re)connexion
 // pour que le notify-server n'utilise jamais une socket morte (stale socket).
 let currentSock = null;
+
+const dispatcher = createDispatcher({
+  agent,
+  runClaude,
+  validateProjectPath,
+  detectDangerousPrompt,
+  rateLimiter,
+  activeSessions,
+  audit,
+});
+
+const whatsappChannel = {
+  name: 'whatsapp',
+  send: (jid, text) => send(currentSock, jid, text),
+};
 
 async function startBot() {
   const { state, saveCreds } = await useMultiFileAuthState('./auth');
@@ -95,12 +115,12 @@ async function startBot() {
       // Pour les vrais messages venant d'un autre, fromMe est false et remoteJid
       // est le JID de l'expéditeur.
       const senderJid = msg.key.remoteJid;
-      const isSelfChat = msg.key.fromMe && isAuthorizedSender(senderJid, OWNER_JID);
+      const isSelfChat = msg.key.fromMe && isAuthorizedSender(senderJid, OWNER_JID, OWNER_LID);
 
       if (msg.key.fromMe && !isSelfChat) continue;
 
       // Sécurité : whitelist stricte
-      if (!isAuthorizedSender(senderJid, OWNER_JID)) {
+      if (!isAuthorizedSender(senderJid, OWNER_JID, OWNER_LID)) {
         audit('unauthorized_sender', { jid: senderJid });
         continue;
       }
@@ -128,121 +148,9 @@ async function startBot() {
         continue;
       }
 
-      await handleMessage(sock, senderJid, text.trim());
+      await dispatcher.handleMessage(whatsappChannel, senderJid, text.trim());
     }
   });
-}
-
-async function handleMessage(sock, jid, text) {
-  audit('message_received', { length: text.length });
-
-  // Confirmation d'une exécution en attente
-  if (agent.pendingExecution && isConfirmation(text)) {
-    const exec = agent.consumePendingExecution();
-
-    // Validation chemin projet
-    const pathCheck = validateProjectPath(exec.projectPath);
-    if (!pathCheck.valid) {
-      audit('exec_blocked_path', { project: exec.project, reason: pathCheck.reason });
-      await send(sock, jid, `🚫 *Chemin refusé* : ${pathCheck.reason}\nProjet : ${exec.project}`);
-      return;
-    }
-
-    // Détection prompt dangereux
-    const danger = detectDangerousPrompt(exec.prompt);
-    if (danger) {
-      audit('exec_blocked_dangerous', { project: exec.project, reason: danger });
-      await send(
-        sock,
-        jid,
-        `🚫 *Action bloquée* : pattern dangereux détecté (${danger}).\nReformule sans cette opération.`
-      );
-      return;
-    }
-
-    // Rate limit exécutions
-    const rateExec = rateLimiter.checkExecution();
-    if (!rateExec.allowed) {
-      audit('rate_limit_exec', { reason: rateExec.reason });
-      await send(sock, jid, `⛔ ${rateExec.reason}`);
-      return;
-    }
-
-    // Pas de double exécution sur le même projet
-    if (activeSessions.has(exec.project)) {
-      audit('exec_blocked_concurrent', { project: exec.project });
-      await send(sock, jid, `⏳ Une session est déjà active sur *${exec.project}*. Attends qu'elle finisse.`);
-      return;
-    }
-
-    audit('exec_start', { project: exec.project, path: pathCheck.realPath });
-    await send(sock, jid, `🚀 Lancement sur *${exec.project}*...\nJe t'envoie un update toutes les minutes.`);
-
-    activeSessions.add(exec.project);
-    const startTime = Date.now();
-    try {
-      const result = await runClaude(
-        exec.prompt,
-        pathCheck.realPath,
-        (update) => send(sock, jid, redactSecrets(update))
-      );
-      const durationMs = Date.now() - startTime;
-      audit('exec_end', { project: exec.project, durationMs, ok: true });
-      await send(sock, jid, redactSecrets(result));
-    } catch (err) {
-      audit('exec_error', { project: exec.project, error: err.message });
-      await send(sock, jid, `❌ Erreur : ${err.message}`);
-    } finally {
-      activeSessions.delete(exec.project);
-    }
-    return;
-  }
-
-  // Refus d'une exécution en attente
-  if (agent.pendingExecution && isRefusal(text)) {
-    audit('exec_refused');
-    agent.consumePendingExecution();
-    await send(sock, jid, '↩️ Annulé. Dis-moi ce que tu veux changer.');
-    return;
-  }
-
-  // Conversation normale avec l'agent Gemini
-  let response;
-  try {
-    response = await agent.chat(text);
-  } catch (err) {
-    audit('agent_error', { error: err.message });
-    // Message lisible plutôt qu'une stack trace Gemini
-    const msg = err?.message || String(err);
-    let userMsg;
-    if (/\b503\b/.test(msg)) userMsg = '⚠️ Gemini saturé (503). Réessaie dans 30s.';
-    else if (/\b429\b/.test(msg)) userMsg = '⚠️ Quota Gemini atteint. Réessaie dans 1min.';
-    else if (/\b403\b/.test(msg)) userMsg = '⚠️ Accès Gemini refusé. Vérifie la clé API.';
-    else if (/\b401\b/.test(msg)) userMsg = '⚠️ Clé Gemini invalide.';
-    else userMsg = `⚠️ Erreur Gemini : ${msg.slice(0, 200)}`;
-    await send(sock, jid, userMsg);
-    return;
-  }
-
-  if (response.type === 'reset') {
-    agent.resetHistory();
-    audit('history_reset');
-    await send(sock, jid, '🔄 Conversation réinitialisée.');
-    return;
-  }
-
-  if (response.type === 'confirm') {
-    audit('exec_pending', { project: response.project });
-    const confirmMsg =
-      `📋 *Voici ce que je vais faire :*\n\n${response.summary}\n\n` +
-      `📁 Projet : *${response.project}*\n` +
-      `📂 Chemin : ${response.projectPath}\n\n` +
-      `Confirme avec *oui* / *ok* / *go*, ou dis-moi ce que tu veux changer.`;
-    await send(sock, jid, confirmMsg);
-    return;
-  }
-
-  await send(sock, jid, response.text);
 }
 
 async function send(sock, jid, text) {
@@ -254,16 +162,6 @@ async function send(sock, jid, text) {
     console.error('Erreur envoi message:', err.message);
     audit('send_error', { error: err.message });
   }
-}
-
-function isConfirmation(text) {
-  return /^(oui|ok|go|yes|yep|✅|כן|ouais|validé|confirme?|lance|c'est bon|c est bon)$/i.test(
-    text.trim()
-  );
-}
-
-function isRefusal(text) {
-  return /^(non|no|nop|nope|annule?|cancel|stop|❌|attends?)$/i.test(text.trim());
 }
 
 // Gestion arrêt propre

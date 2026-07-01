@@ -247,12 +247,20 @@ export function audit(event, details = {}) {
  * Le suffix :N est le device id (un même compte peut être linké sur plusieurs
  * devices). On normalise en supprimant le device id avant comparaison.
  *
+ * WhatsApp route certains messages (notamment le self-chat) avec un
+ * identifiant @lid ("linked ID", anonyme, stable par compte) au lieu du
+ * numéro @s.whatsapp.net habituel. Comme un @lid n'est pas dérivable du
+ * numéro de téléphone, on ne peut PAS le normaliser — il doit être
+ * whitelisté explicitement via ownerLid (comparaison exacte, pas de
+ * wildcard sur tout @lid, pour ne pas élargir la surface d'attaque).
+ *
  * Refuse explicitement les groupes (@g.us) et broadcasts.
  */
-export function isAuthorizedSender(jid, ownerJid) {
+export function isAuthorizedSender(jid, ownerJid, ownerLid) {
   if (!jid || !ownerJid) return false;
   if (jid.endsWith('@g.us')) return false;
   if (jid === 'status@broadcast') return false;
+  if (jid.endsWith('@lid')) return Boolean(ownerLid) && jid === ownerLid;
   return normalizeJid(jid) === normalizeJid(ownerJid);
 }
 
