@@ -51,7 +51,7 @@ export class Agent {
     // systemInstruction doit être passé au moment de getGenerativeModel(), pas
     // dans startChat(). Format : { parts: [{ text }] }, pas une string brute.
     this.model = this.genAI.getGenerativeModel({
-      model: process.env.GEMINI_MODEL || 'gemini-2.5-flash',
+      model: process.env.GEMINI_MODEL || 'gemini-2.5-flash-lite',
       systemInstruction: { parts: [{ text: SYSTEM_PROMPT }] },
     });
     this.history = [];
@@ -140,7 +140,7 @@ export class Agent {
   }
 }
 
-function tryParseAction(text) {
+export function tryParseAction(text) {
   try {
     // Le modèle peut wrapper le JSON dans des backticks
     const clean = text.replace(/^```json\s*/i, '').replace(/```\s*$/, '').trim();
