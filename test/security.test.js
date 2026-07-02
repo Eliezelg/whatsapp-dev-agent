@@ -29,6 +29,12 @@ test('isAuthorizedSender: accepte le LID owner explicite quand ownerLid est four
   assert.equal(isAuthorizedSender(OWNER_LID, OWNER_JID, OWNER_LID), true);
 });
 
+test('isAuthorizedSender: accepte le LID owner avec suffixe device (:N@lid)', () => {
+  // WhatsApp peut ajouter un device id au @lid comme au @s.whatsapp.net.
+  assert.equal(isAuthorizedSender('54246108078131:12@lid', OWNER_JID, OWNER_LID), true);
+  assert.equal(isAuthorizedSender(OWNER_LID, OWNER_JID, '54246108078131:5@lid'), true);
+});
+
 test('isAuthorizedSender: refuse un LID différent même si ownerLid est fourni', () => {
   assert.equal(isAuthorizedSender('99999999999@lid', OWNER_JID, OWNER_LID), false);
 });

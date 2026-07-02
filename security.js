@@ -260,7 +260,12 @@ export function isAuthorizedSender(jid, ownerJid, ownerLid) {
   if (!jid || !ownerJid) return false;
   if (jid.endsWith('@g.us')) return false;
   if (jid === 'status@broadcast') return false;
-  if (jid.endsWith('@lid')) return Boolean(ownerLid) && jid === ownerLid;
+  // Un @lid peut aussi porter un suffixe device (:N@lid), comme @s.whatsapp.net.
+  // On normalise des deux côtés avant comparaison, pour éviter un faux négatif
+  // (message refusé) si WhatsApp ajoute un device id au @lid — ce qui
+  // reproduirait le bug de réception silencieuse. Reste une whitelist stricte :
+  // comparaison exacte du @lid owner, jamais un wildcard sur tout @lid.
+  if (jid.endsWith('@lid')) return Boolean(ownerLid) && normalizeJid(jid) === normalizeJid(ownerLid);
   return normalizeJid(jid) === normalizeJid(ownerJid);
 }
 

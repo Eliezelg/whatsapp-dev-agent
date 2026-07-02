@@ -12,6 +12,7 @@
  * DNS) ne fige un appelant — critique pour le handler uncaughtException.
  */
 import { Resend } from 'resend';
+import { redactSecrets } from './security.js';
 
 const SEND_TIMEOUT_MS = 5000;
 
@@ -41,8 +42,15 @@ export async function sendAlertEmail(subject, text) {
     return false;
   }
 
+  // Defense in depth : redaction des secrets au point d'envoi. Les appelants
+  // passent des contenus non maîtrisés (stack traces de crash, sortie Claude
+  // Code, err.message) qui peuvent contenir des clés/tokens — ne jamais les
+  // laisser partir en clair vers un service email externe.
+  const safeSubject = redactSecrets(subject);
+  const safeText = redactSecrets(text);
+
   const sendPromise = resend.emails
-    .send({ from, to, subject: `[whatsapp-agent] ${subject}`, text })
+    .send({ from, to, subject: `[whatsapp-agent] ${safeSubject}`, text: safeText })
     .then(() => true)
     .catch((err) => {
       console.error('[alert-email] échec envoi:', err?.message || err);
