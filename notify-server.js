@@ -18,39 +18,19 @@ const MAX_BODY_BYTES = 8192;
 
 const recentNotifications = [];
 
-export function startNotifyServer(getSock, ownerJid) {
+export function startNotifyServer(getSock, ownerJid, apiRouter = null) {
   // getSock() retourne TOUJOURS la socket courante (vivante), pas une socket
   // capturee au boot. Evite les echecs 'Connection Closed' apres reconnexion.
+  // apiRouter (optionnel) : routeur des routes /api/* (app mobile). Consulté en
+  // premier ; si absent ou route non /api/*, on retombe sur la logique /notify.
   if (!NOTIFY_TOKEN) {
     console.warn('⚠️ NOTIFY_TOKEN non défini → endpoint /notify désactivé');
     return null;
   }
 
   const server = createServer((req, res) => {
-    // Méthode + path strict
-    if (req.method !== 'POST' || req.url !== '/notify') {
-      res.writeHead(404).end('not found');
-      return;
-    }
-
-    // Auth header obligatoire
-    const auth = req.headers['authorization'] || '';
-    if (auth !== `Bearer ${NOTIFY_TOKEN}`) {
-      res.writeHead(401).end('unauthorized');
-      return;
-    }
-
-    // Rate limit
-    const now = Date.now();
-    while (recentNotifications.length && recentNotifications[0] < now - 60_000) {
-      recentNotifications.shift();
-    }
-    if (recentNotifications.length >= 10) {
-      res.writeHead(429).end('rate limit');
-      return;
-    }
-
-    // Lire le body
+    // Les routes /api/* ont besoin du body brut (GET : vide) → on lit toujours
+    // le body d'abord, puis on dispatche vers l'API ou vers /notify.
     let body = '';
     let bytes = 0;
     let aborted = false;
@@ -68,6 +48,39 @@ export function startNotifyServer(getSock, ownerJid) {
 
     req.on('end', async () => {
       if (aborted) return;
+
+      // 1) Routes /api/* (app mobile) — si prises en charge, on s'arrête là.
+      if (apiRouter) {
+        try {
+          const handled = await apiRouter.handle(req, res, body);
+          if (handled) return;
+        } catch (err) {
+          console.error('[api] erreur routeur:', err?.message || err);
+          if (!res.headersSent) res.writeHead(500).end('internal error');
+          return;
+        }
+      }
+
+      // 2) Sinon : logique /notify historique (méthode + path strict).
+      if (req.method !== 'POST' || req.url !== '/notify') {
+        res.writeHead(404).end('not found');
+        return;
+      }
+
+      const auth = req.headers['authorization'] || '';
+      if (auth !== `Bearer ${NOTIFY_TOKEN}`) {
+        res.writeHead(401).end('unauthorized');
+        return;
+      }
+
+      const now = Date.now();
+      while (recentNotifications.length && recentNotifications[0] < now - 60_000) {
+        recentNotifications.shift();
+      }
+      if (recentNotifications.length >= 10) {
+        res.writeHead(429).end('rate limit');
+        return;
+      }
 
       let payload;
       try {

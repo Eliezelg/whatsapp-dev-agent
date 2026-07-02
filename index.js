@@ -8,6 +8,8 @@ import { runClaude } from './runner.js';
 import { startNotifyServer } from './notify-server.js';
 import { createDispatcher } from './core/dispatcher.js';
 import { sendAlertEmail } from './notify-email.js';
+import { createApiRouter } from './channels/api.js';
+import { listProjects, getProject } from './projects.js';
 import {
   rateLimiter,
   validateProjectPath,
@@ -65,6 +67,24 @@ const dispatcher = createDispatcher({
   audit,
   alertEmail: sendAlertEmail,
 });
+
+// ─── API REST interne (app mobile) ──────────────────────────────────────────
+// Activée seulement si API_TOKEN est défini. Le serveur reste bind 127.0.0.1 ;
+// l'exposition au téléphone passera par Tailscale (pas d'ouverture publique).
+// Le canal 'api' a un send no-op : les messages d'exécution sont déjà
+// journalisés dans le transcript du dispatcher (servi via GET /api/transcript).
+const API_TOKEN = process.env.API_TOKEN;
+const apiChannel = { name: 'api', send: async () => {} };
+const apiRouter = API_TOKEN
+  ? createApiRouter({
+      apiToken: API_TOKEN,
+      dispatcher,
+      listProjects,
+      getProject,
+      channel: apiChannel,
+      audit,
+    })
+  : null;
 
 // ─── Alerte de déconnexion WhatsApp prolongée ───────────────────────────────
 // Etat module-level (hors startBot, qui est rappelée à chaque reconnexion).
@@ -144,7 +164,7 @@ async function startBot() {
       onReconnected();
       // Lance le notify server (idempotent : ne fait rien si déjà démarré)
       if (!global.__notifyStarted) {
-        startNotifyServer(() => currentSock, OWNER_JID);
+        startNotifyServer(() => currentSock, OWNER_JID, apiRouter);
         global.__notifyStarted = true;
       }
     }
