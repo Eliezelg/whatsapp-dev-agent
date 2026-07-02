@@ -19,6 +19,35 @@ export function createDispatcher({ agent, runClaude, validateProjectPath, detect
   // les notifications d'échec sont simplement ignorées. Best-effort, jamais
   // bloquant pour le flux principal.
   const notifyFailure = typeof alertEmail === 'function' ? alertEmail : () => {};
+
+  // ─── Transcript & état par projet (pour l'API mobile) ──────────────────────
+  // Agent.history ne contient QUE les tours user/Gemini, pas les messages
+  // sortants (confirmations, "🚀 Lancement", updates, résultat Claude Code).
+  // On journalise ici, par projet, les messages liés aux exécutions — c'est ce
+  // que l'app mobile affiche. Alimenté quand le projet est connu (executeConfirmed).
+  const MAX_TRANSCRIPT_PER_PROJECT = 100; // borne mémoire
+  const transcript = new Map(); // project -> [{ ts, role: 'user'|'agent', text }]
+  const lastUpdate = new Map(); // project -> string (dernier "⏳ En cours..." d'une exec)
+
+  function recordMessage(project, role, text) {
+    if (!project) return;
+    let msgs = transcript.get(project);
+    if (!msgs) { msgs = []; transcript.set(project, msgs); }
+    msgs.push({ ts: Date.now(), role, text });
+    if (msgs.length > MAX_TRANSCRIPT_PER_PROJECT) msgs.splice(0, msgs.length - MAX_TRANSCRIPT_PER_PROJECT);
+  }
+
+  // Getters exposés à l'API (lecture seule côté appelant).
+  function getTranscript(project) {
+    return (transcript.get(project) || []).map((m) => ({ ...m }));
+  }
+  function getExecutionState(project) {
+    return {
+      project,
+      active: activeSessions.has(project),
+      lastUpdate: lastUpdate.get(project) || null,
+    };
+  }
   async function handleMessage(channel, senderId, text) {
     audit('message_received', { length: text.length, channel: channel.name });
 
@@ -105,7 +134,11 @@ export function createDispatcher({ agent, runClaude, validateProjectPath, detect
     }
 
     audit('exec_start', { project: exec.project, path: pathCheck.realPath, channel: channel.name });
-    await channel.send(senderId, `🚀 Lancement sur *${exec.project}*...\nJe t'envoie un update toutes les minutes.`);
+    // Journalise l'intention utilisateur + le lancement dans le transcript projet.
+    recordMessage(exec.project, 'user', exec.prompt);
+    const launchMsg = `🚀 Lancement sur *${exec.project}*...\nJe t'envoie un update toutes les minutes.`;
+    recordMessage(exec.project, 'agent', launchMsg);
+    await channel.send(senderId, launchMsg);
 
     activeSessions.add(exec.project);
     const startTime = Date.now();
@@ -113,10 +146,14 @@ export function createDispatcher({ agent, runClaude, validateProjectPath, detect
       // runClaude retourne { status: 'ok'|'killed'|'error', text }.
       // Il ne rejette jamais : le catch ci-dessous ne couvre que des bugs
       // internes du dispatcher, pas les échecs d'exécution Claude Code eux-mêmes.
-      const result = await runClaude(exec.prompt, pathCheck.realPath, (update) => channel.send(senderId, update));
+      const result = await runClaude(exec.prompt, pathCheck.realPath, (update) => {
+        lastUpdate.set(exec.project, update); // dernier update, pour GET /api/status
+        return channel.send(senderId, update);
+      });
       const durationMs = Date.now() - startTime;
       const ok = result.status === 'ok';
       audit('exec_end', { project: exec.project, durationMs, status: result.status, ok, channel: channel.name });
+      recordMessage(exec.project, 'agent', result.text);
       await channel.send(senderId, result.text);
       // Duplication email sur echec reel (kill par limite ou erreur spawn/process).
       // Les succes (status 'ok', meme avec exit code != 0) ne generent pas d'alerte.
@@ -128,17 +165,20 @@ export function createDispatcher({ agent, runClaude, validateProjectPath, detect
       }
     } catch (err) {
       audit('exec_error', { project: exec.project, error: err.message, channel: channel.name });
-      await channel.send(senderId, `❌ Erreur : ${err.message}`);
+      const errMsg = `❌ Erreur : ${err.message}`;
+      recordMessage(exec.project, 'agent', errMsg);
+      await channel.send(senderId, errMsg);
       notifyFailure(
         `Erreur interne dispatcher sur ${exec.project}`,
         `Projet : ${exec.project}\nCanal : ${channel.name}\n\n${err.stack || err.message}`,
       );
     } finally {
       activeSessions.delete(exec.project);
+      lastUpdate.delete(exec.project); // plus d'exécution en cours -> pas d'update "live"
     }
   }
 
-  return { handleMessage };
+  return { handleMessage, getTranscript, getExecutionState };
 }
 
 export function isConfirmation(text) {

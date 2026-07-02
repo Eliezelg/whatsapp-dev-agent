@@ -246,3 +246,46 @@ test('executeConfirmed: PAS d\'alerte email sur succès (status ok)', async () =
 
   assert.equal(alertEmail.mock.callCount(), 0);
 });
+
+test('getTranscript: journalise prompt + lancement + résultat par projet', async () => {
+  const agent = makeAgent();
+  agent.pendingExecution = { project: 'familink', projectPath: '/workspaces/familink', prompt: 'ajoute un bouton', summary: 's' };
+  const channel = makeChannel();
+
+  const dispatcher = createDispatcher({
+    agent,
+    runClaude: mock.fn(async () => ({ status: 'ok', text: '✅ Terminé\n\nbouton ajouté' })),
+    validateProjectPath: () => ({ valid: true, realPath: '/workspaces/familink' }),
+    detectDangerousPrompt: () => null,
+    rateLimiter: { checkExecution: () => ({ allowed: true }) },
+    activeSessions: new Set(),
+    audit: () => {},
+  });
+
+  await dispatcher.handleMessage(channel, 'user-1', 'ok');
+
+  const t = dispatcher.getTranscript('familink');
+  assert.equal(t.length, 3); // user prompt + lancement + résultat
+  assert.equal(t[0].role, 'user');
+  assert.match(t[0].text, /ajoute un bouton/);
+  assert.match(t[1].text, /Lancement/);
+  assert.match(t[2].text, /bouton ajouté/);
+  // Un projet non touché a un transcript vide.
+  assert.deepEqual(dispatcher.getTranscript('tzedakal'), []);
+});
+
+test('getExecutionState: reflète active via activeSessions', () => {
+  const activeSessions = new Set(['vps']);
+  const dispatcher = createDispatcher({
+    agent: makeAgent(),
+    runClaude: mock.fn(async () => ({ status: 'ok', text: '✅' })),
+    validateProjectPath: () => ({ valid: true, realPath: '/opt/projects/vps' }),
+    detectDangerousPrompt: () => null,
+    rateLimiter: { checkExecution: () => ({ allowed: true }) },
+    activeSessions,
+    audit: () => {},
+  });
+
+  assert.deepEqual(dispatcher.getExecutionState('vps'), { project: 'vps', active: true, lastUpdate: null });
+  assert.deepEqual(dispatcher.getExecutionState('familink'), { project: 'familink', active: false, lastUpdate: null });
+});
