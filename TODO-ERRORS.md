@@ -22,9 +22,13 @@ session corrompue jamais nettoyée).
 
 **Action proposée** : surveiller si ça coïncide avec des pertes réelles de
 messages. Si oui, envisager un reset propre de la session (`./auth` +
-re-scan QR) et supprimer le dossier `auth.corrupt.*` résiduel. Sinon, envisager
-de filtrer/downgrader ce log libsignal (il vient de `console.error` interne à
-la lib, non contrôlé par le `level: 'silent'` de pino).
+re-scan QR) et supprimer le dossier `auth.corrupt.*` résiduel.
+
+**MAJ 2026-07-04** : le BRUIT de ces logs est désormais filtré (`log-filter.js`,
+installé au boot de `index.js` — supprime Bad MAC / Closing session / dumps
+SessionEntry de journalctl, sans toucher aux logs applicatifs). La cause racine
+de la désync Signal reste non résolue mais bénigne (aucune perte de message
+observée à ce jour). L'entrée reste ouverte tant que la cause n'est pas comprise.
 
 ---
 

@@ -19,6 +19,12 @@ import {
   redactSecrets,
   audit,
 } from './security.js';
+import { installLogFilter } from './log-filter.js';
+
+// Supprime le bruit de logs internes à libsignal (Bad MAC, dumps de session)
+// qui noie journalctl sans valeur opérationnelle. Installé tôt : libsignal ne
+// loggue qu'à l'usage (déchiffrement), donc ce point d'installation suffit.
+installLogFilter();
 
 const OWNER_JID = process.env.WHATSAPP_OWNER;
 // (optionnel) Identifiant @lid du owner — WhatsApp route certains messages
