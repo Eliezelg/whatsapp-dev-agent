@@ -6,16 +6,16 @@
       "description": "VPS sysadmin / audit sécu / Asterisk / Claude Code shell access"
     },
     "tzedakal": {
-      "path": "/workspaces/tzedakal",
+      "path": "/opt/projects/tzedakal",
       "description": "NestJS + Next.js 15 + PostgreSQL"
     },
-    "familink": {
-      "path": "/workspaces/familink",
-      "description": "Next.js 15"
-    },
     "gmah": {
-      "path": "/workspaces/gmah",
+      "path": "/opt/projects/gmah",
       "description": "React + Flask"
+    },
+    "villaaviv": {
+      "path": "/opt/projects/villaaviv",
+      "description": "Projet villaaviv"
     }
   }
 }

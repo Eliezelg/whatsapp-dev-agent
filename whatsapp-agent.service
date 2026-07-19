@@ -1,5 +1,8 @@
 [Unit]
 Description=WhatsApp Dev Agent (hardened)
+# Auto-restart limits (anti boucle de crash) — doit être en [Unit], pas [Service]
+StartLimitIntervalSec=600
+StartLimitBurst=5
 After=network-online.target
 Wants=network-online.target
 
@@ -55,10 +58,6 @@ LockPersonality=true
 RestrictNamespaces=true
 RestrictSUIDSGID=true
 RemoveIPC=true
-
-# Auto-restart limits (anti boucle de crash)
-StartLimitIntervalSec=600
-StartLimitBurst=5
 
 # Logs
 StandardOutput=journal
