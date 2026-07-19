@@ -398,3 +398,149 @@ test('isConfirmation et isRefusal: un message neutre ne matche ni l\'un ni l\'au
   assert.equal(isConfirmation(neutral), false);
   assert.equal(isRefusal(neutral), false);
 });
+
+// ─── /status et /cancel ──────────────────────────────────────────────────────
+
+test('/status sans argument liste tous les projets avec leur état', async () => {
+  const agent = makeAgent();
+  const channel = { name: 'whatsapp', sent: [], send: mock.fn(async function (id, t) { this.sent.push({ id, text: t }); }) };
+  const activeSessions = new Set(['vps']);
+
+  const dispatcher = createDispatcher({
+    agent, runClaude: mock.fn(),
+    validateProjectPath: () => ({ valid: true, realPath: '/opt/projects/vps' }),
+    detectDangerousPrompt: () => null,
+    rateLimiter: { checkExecution: () => ({ allowed: true }) },
+    activeSessions,
+    audit: () => {},
+  });
+
+  await dispatcher.handleMessage(channel, 'user', '/status');
+
+  assert.equal(agent.chat.mock.callCount(), 0, 'ne doit pas appeler Gemini');
+  const msg = channel.sent[0].text;
+  assert.match(msg, /vps.*en cours/s);
+});
+
+test('/status <projet> donne le détail d\'un projet précis', async () => {
+  const agent = makeAgent();
+  const channel = { name: 'whatsapp', sent: [], send: mock.fn(async function (id, t) { this.sent.push({ id, text: t }); }) };
+
+  const dispatcher = createDispatcher({
+    agent, runClaude: mock.fn(),
+    validateProjectPath: () => ({ valid: true, realPath: '/opt/projects/vps' }),
+    detectDangerousPrompt: () => null,
+    rateLimiter: { checkExecution: () => ({ allowed: true }) },
+    activeSessions: new Set(),
+    audit: () => {},
+  });
+
+  await dispatcher.handleMessage(channel, 'user', '/status vps');
+
+  assert.match(channel.sent[0].text, /aucune exécution en cours/);
+});
+
+test('/status <projet inconnu> renvoie une erreur claire', async () => {
+  const agent = makeAgent();
+  const channel = { name: 'whatsapp', sent: [], send: mock.fn(async function (id, t) { this.sent.push({ id, text: t }); }) };
+
+  const dispatcher = createDispatcher({
+    agent, runClaude: mock.fn(),
+    validateProjectPath: () => ({ valid: true, realPath: '/opt/projects/vps' }),
+    detectDangerousPrompt: () => null,
+    rateLimiter: { checkExecution: () => ({ allowed: true }) },
+    activeSessions: new Set(),
+    audit: () => {},
+  });
+
+  await dispatcher.handleMessage(channel, 'user', '/status projet-qui-n-existe-pas');
+
+  assert.match(channel.sent[0].text, /introuvable/);
+});
+
+test('/cancel sans exécution active répond clairement, sans appeler cancelRunningClaude', async () => {
+  const agent = makeAgent();
+  const channel = { name: 'whatsapp', sent: [], send: mock.fn(async function (id, t) { this.sent.push({ id, text: t }); }) };
+  const cancelRunningClaude = mock.fn(() => true);
+
+  const dispatcher = createDispatcher({
+    agent, runClaude: mock.fn(),
+    validateProjectPath: () => ({ valid: true, realPath: '/opt/projects/vps' }),
+    detectDangerousPrompt: () => null,
+    rateLimiter: { checkExecution: () => ({ allowed: true }) },
+    activeSessions: new Set(),
+    audit: () => {},
+    cancelRunningClaude,
+  });
+
+  await dispatcher.handleMessage(channel, 'user', '/cancel');
+
+  assert.equal(cancelRunningClaude.mock.callCount(), 0);
+  assert.match(channel.sent[0].text, /Aucune exécution en cours/);
+});
+
+test('/cancel <projet> avec exécution active appelle cancelRunningClaude sur le bon realPath', async () => {
+  const agent = makeAgent();
+  agent.chat = mock.fn(async () => {
+    agent.pendingExecution = { project: 'vps', projectPath: '/opt/projects/vps', prompt: 'longue tache', summary: 's' };
+    return { type: 'confirm', summary: 's', project: 'vps', projectPath: '/opt/projects/vps', prompt: 'longue tache' };
+  });
+  // autoConfirm: true — sinon handleMessage n'affiche que le message de
+  // confirmation et n'appelle jamais executeConfirmed (qui pose
+  // activeSessions/activeRealPaths), il faudrait un second message "oui".
+  const channel = { name: 'api', autoConfirm: true, sent: [], send: mock.fn(async function (id, t) { this.sent.push({ id, text: t }); }) };
+  const cancelRunningClaude = mock.fn(() => true);
+  const activeSessions = new Set();
+
+  // runClaude qui ne se résout jamais dans ce test (simule une exécution
+  // longue) — on n'attend pas cette promesse, juste executeConfirmed qui
+  // pose activeSessions/activeRealPaths avant d'attendre le résultat.
+  const runClaude = mock.fn(() => new Promise(() => {}));
+
+  const dispatcher = createDispatcher({
+    agent, runClaude,
+    validateProjectPath: () => ({ valid: true, realPath: '/opt/projects/vps' }),
+    detectDangerousPrompt: () => null,
+    rateLimiter: { checkExecution: () => ({ allowed: true }) },
+    activeSessions,
+    audit: () => {},
+    cancelRunningClaude,
+  });
+
+  // Lance l'exécution SANS attendre (elle ne se termine jamais dans ce test,
+  // runClaude() ne résout jamais). handleMessage() await agent.chat() (résolu
+  // immédiatement) puis, avec autoConfirm, appelle executeConfirmed() qui pose
+  // activeSessions/activeRealPaths de façon synchrone AVANT d'awaiter
+  // runClaude() — donc dès que le premier microtask (agent.chat) est vidé,
+  // l'état est déjà posé.
+  dispatcher.handleMessage(channel, 'user', 'fais un audit du vps');
+  await new Promise((r) => setImmediate(r));
+
+  assert.equal(activeSessions.has('vps'), true, 'activeSessions doit être posé avant le /cancel');
+
+  await dispatcher.handleMessage(channel, 'user', '/cancel vps');
+
+  assert.equal(cancelRunningClaude.mock.callCount(), 1);
+  assert.equal(cancelRunningClaude.mock.calls[0].arguments[0], '/opt/projects/vps');
+  assert.match(channel.sent.at(-1).text, /Annulation demandée/);
+});
+
+test('/cancel sans cancelRunningClaude injecté répond non disponible plutôt que de planter', async () => {
+  const agent = makeAgent();
+  const channel = { name: 'whatsapp', sent: [], send: mock.fn(async function (id, t) { this.sent.push({ id, text: t }); }) };
+  const activeSessions = new Set(['vps']);
+
+  const dispatcher = createDispatcher({
+    agent, runClaude: mock.fn(),
+    validateProjectPath: () => ({ valid: true, realPath: '/opt/projects/vps' }),
+    detectDangerousPrompt: () => null,
+    rateLimiter: { checkExecution: () => ({ allowed: true }) },
+    activeSessions,
+    audit: () => {},
+    // cancelRunningClaude non injecté volontairement.
+  });
+
+  await dispatcher.handleMessage(channel, 'user', '/cancel vps');
+
+  assert.match(channel.sent[0].text, /non disponible/);
+});

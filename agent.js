@@ -195,6 +195,8 @@ function parseCommand(text) {
         `/projets — liste les projets\n` +
         `/default <nom> — changer le projet par défaut\n` +
         `/add <nom> <path> — ajouter un projet\n` +
+        `/status [projet] — état des exécutions en cours\n` +
+        `/cancel [projet] — annuler une exécution en cours\n` +
         `/reset — réinitialiser la conversation\n\n` +
         `Ou envoie simplement ta demande en texte libre !`,
     };

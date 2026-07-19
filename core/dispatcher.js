@@ -1,3 +1,5 @@
+import { listProjects } from '../projects.js';
+
 /**
  * Cœur métier canal-agnostique : gère confirmation/refus/dispatch d'une
  * exécution Claude Code, indépendamment du canal de messagerie (WhatsApp,
@@ -13,8 +15,11 @@
  * @param {Set<string>} deps.activeSessions - clé = nom de projet, partagé entre canaux
  *   pour empêcher deux canaux différents de lancer Claude Code sur le même projet en même temps.
  * @param {(event: string, details?: object) => void} deps.audit
+ * @param {(realPath: string) => boolean} [deps.cancelRunningClaude] - kill le process
+ *   claude en cours pour ce chemin (runner.js). Optionnel : si absent, /cancel répond
+ *   qu'aucune annulation n'est possible plutôt que de planter.
  */
-export function createDispatcher({ agent, runClaude, validateProjectPath, detectDangerousPrompt, rateLimiter, activeSessions, audit, alertEmail }) {
+export function createDispatcher({ agent, runClaude, validateProjectPath, detectDangerousPrompt, rateLimiter, activeSessions, audit, alertEmail, cancelRunningClaude }) {
   // alertEmail est optionnel : si non injecté (tests, ou email non configuré),
   // les notifications d'échec sont simplement ignorées. Best-effort, jamais
   // bloquant pour le flux principal.
@@ -28,6 +33,7 @@ export function createDispatcher({ agent, runClaude, validateProjectPath, detect
   const MAX_TRANSCRIPT_PER_PROJECT = 100; // borne mémoire
   const transcript = new Map(); // project -> [{ ts, role: 'user'|'agent', text }]
   const lastUpdate = new Map(); // project -> string (dernier "⏳ En cours..." d'une exec)
+  const activeRealPaths = new Map(); // project -> realPath (pour /cancel, le temps de l'exec)
 
   function recordMessage(project, role, text) {
     if (!project) return;
@@ -48,6 +54,72 @@ export function createDispatcher({ agent, runClaude, validateProjectPath, detect
       lastUpdate: lastUpdate.get(project) || null,
     };
   }
+
+  /**
+   * Annule l'exécution en cours sur ce projet, si elle existe.
+   * @returns {{cancelled: boolean, reason?: string}}
+   */
+  function cancelExecution(project) {
+    if (!activeSessions.has(project)) {
+      return { cancelled: false, reason: 'no_active_execution' };
+    }
+    if (typeof cancelRunningClaude !== 'function') {
+      return { cancelled: false, reason: 'not_supported' };
+    }
+    const realPath = activeRealPaths.get(project);
+    if (!realPath) {
+      // Ne devrait pas arriver (activeSessions et activeRealPaths sont posés
+      // ensemble dans executeConfirmed) — filet de sécurité défensif.
+      return { cancelled: false, reason: 'no_active_execution' };
+    }
+    const killed = cancelRunningClaude(realPath);
+    audit('exec_cancel_requested', { project, killed });
+    return { cancelled: killed, reason: killed ? undefined : 'no_active_execution' };
+  }
+
+  /**
+   * Formate la réponse à /status [projet]. Sans argument : état de tous les
+   * projets déclarés. Avec argument : détail d'un seul projet (ou erreur
+   * s'il n'existe pas dans projects.json).
+   */
+  function formatStatusMessage(projectArg) {
+    const projects = listProjects();
+    if (projectArg) {
+      const known = projects.find((p) => p.name === projectArg);
+      if (!known) {
+        return `❌ Projet "${projectArg}" introuvable. Projets : ${projects.map((p) => p.name).join(', ')}`;
+      }
+      const state = getExecutionState(projectArg);
+      return state.active
+        ? `⏳ *${projectArg}* — exécution en cours.\n${state.lastUpdate || '(pas encore d\'update)'}`
+        : `✅ *${projectArg}* — aucune exécution en cours.`;
+    }
+    const lines = projects.map((p) => {
+      const state = getExecutionState(p.name);
+      return `${state.active ? '⏳' : '▫️'} *${p.name}*${state.active ? ' — en cours' : ''}`;
+    });
+    return `📋 *Statut des projets :*\n${lines.join('\n')}`;
+  }
+
+  /**
+   * Traite /cancel [projet]. Sans argument : annule toutes les exécutions
+   * actives trouvées. Avec argument : cible un seul projet.
+   */
+  function handleCancelCommand(projectArg) {
+    if (projectArg) {
+      const result = cancelExecution(projectArg);
+      if (result.cancelled) return `🛑 Annulation demandée sur *${projectArg}*.`;
+      if (result.reason === 'not_supported') return `❌ Annulation non disponible.`;
+      return `ℹ️ Aucune exécution en cours sur *${projectArg}*.`;
+    }
+    const activeProjects = [...activeSessions];
+    if (activeProjects.length === 0) return 'ℹ️ Aucune exécution en cours.';
+    const results = activeProjects.map((p) => ({ project: p, result: cancelExecution(p) }));
+    const cancelled = results.filter((r) => r.result.cancelled).map((r) => r.project);
+    if (cancelled.length === 0) return '❌ Annulation non disponible.';
+    return `🛑 Annulation demandée sur : ${cancelled.join(', ')}.`;
+  }
+
   async function handleMessage(channel, senderId, text) {
     audit('message_received', { length: text.length, channel: channel.name });
 
@@ -60,6 +132,23 @@ export function createDispatcher({ agent, runClaude, validateProjectPath, detect
       audit('exec_refused', { channel: channel.name });
       agent.consumePendingExecution();
       await channel.send(senderId, '↩️ Annulé. Dis-moi ce que tu veux changer.');
+      return;
+    }
+
+    // /status et /cancel court-circuitent Gemini : ce sont des commandes
+    // système sur l'état d'exécution, pas des demandes à router vers un
+    // projet. Interceptées ici (canal-agnostique) plutôt que dans agent.js
+    // pour avoir un accès direct à activeSessions/cancelExecution sans
+    // faire remonter cet état jusqu'à l'agent Gemini.
+    const statusMatch = text.trim().match(/^\/status(?:\s+(\S+))?$/i);
+    if (statusMatch) {
+      await channel.send(senderId, formatStatusMessage(statusMatch[1]));
+      return;
+    }
+
+    const cancelMatch = text.trim().match(/^\/cancel(?:\s+(\S+))?$/i);
+    if (cancelMatch) {
+      await channel.send(senderId, handleCancelCommand(cancelMatch[1]));
       return;
     }
 
@@ -151,9 +240,10 @@ export function createDispatcher({ agent, runClaude, validateProjectPath, detect
     await channel.send(senderId, launchMsg);
 
     activeSessions.add(exec.project);
+    activeRealPaths.set(exec.project, pathCheck.realPath);
     const startTime = Date.now();
     try {
-      // runClaude retourne { status: 'ok'|'killed'|'error', text }.
+      // runClaude retourne { status: 'ok'|'killed'|'cancelled'|'error', text }.
       // Il ne rejette jamais : le catch ci-dessous ne couvre que des bugs
       // internes du dispatcher, pas les échecs d'exécution Claude Code eux-mêmes.
       const result = await runClaude(exec.prompt, pathCheck.realPath, (update) => {
@@ -162,12 +252,14 @@ export function createDispatcher({ agent, runClaude, validateProjectPath, detect
       });
       const durationMs = Date.now() - startTime;
       const ok = result.status === 'ok';
+      const cancelled = result.status === 'cancelled';
       audit('exec_end', { project: exec.project, durationMs, status: result.status, ok, channel: channel.name });
       recordMessage(exec.project, 'agent', result.text);
       await channel.send(senderId, result.text);
       // Duplication email sur echec reel (kill par limite ou erreur spawn/process).
-      // Les succes (status 'ok', meme avec exit code != 0) ne generent pas d'alerte.
-      if (!ok) {
+      // Ni un succes (status 'ok', meme avec exit code != 0) ni une annulation
+      // volontaire (/cancel, l'utilisateur sait déjà) ne generent d'alerte.
+      if (!ok && !cancelled) {
         notifyFailure(
           `Exécution ${result.status === 'killed' ? 'interrompue' : 'échouée'} sur ${exec.project}`,
           `Projet : ${exec.project}\nCanal : ${channel.name}\nDurée : ${Math.round(durationMs / 1000)}s\n\n${result.text}`,
@@ -184,11 +276,12 @@ export function createDispatcher({ agent, runClaude, validateProjectPath, detect
       );
     } finally {
       activeSessions.delete(exec.project);
+      activeRealPaths.delete(exec.project);
       lastUpdate.delete(exec.project); // plus d'exécution en cours -> pas d'update "live"
     }
   }
 
-  return { handleMessage, getTranscript, getExecutionState };
+  return { handleMessage, getTranscript, getExecutionState, cancelExecution };
 }
 
 // Liste de mots-clés suivie du premier mot du message (pas d'ancrage exact

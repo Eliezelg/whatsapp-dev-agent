@@ -9,6 +9,30 @@ const MAX_OUTPUT_BYTES = 10 * 1024 * 1024; // 10 Mo
 const IDLE_TIMEOUT_MS = 5 * 60 * 1000; // kill si pas de stdout depuis 5 min
 const MIN_PATH = '/usr/local/bin:/usr/bin:/bin';
 
+// Registre des process `claude` actifs, clé = projectPath (chemin déjà
+// résolu, identique à celui utilisé par activeSessions côté dispatcher).
+// Permet à /cancel (commande WhatsApp) de tuer une exécution en cours sans
+// changer la signature publique de runClaude().
+const activeProcesses = new Map();
+
+/**
+ * Tue le process `claude` en cours pour ce projet, s'il y en a un.
+ * @param {string} projectPath - chemin résolu du projet (realPath).
+ * @returns {boolean} true si un process a été trouvé et tué, false sinon.
+ */
+export function cancelRunningClaude(projectPath) {
+  const entry = activeProcesses.get(projectPath);
+  if (!entry) return false;
+  entry.cancelledFlag.value = true;
+  try {
+    entry.proc.kill('SIGKILL');
+  } catch {
+    // Process déjà mort entre le get() et le kill() — pas une erreur pour
+    // l'appelant, le résultat (plus de process actif) est déjà atteint.
+  }
+  return true;
+}
+
 // ─────────────────────────────────────────────────────────────────────────────
 // Résolution une seule fois du binaire claude (pin chemin absolu)
 // Évite l'attaque PATH-hijacking sur ~/.local/bin/claude.
@@ -108,6 +132,10 @@ function stripInternal({ status, text }) {
 function runClaudeOnce(prompt, projectPath, onUpdate) {
   return new Promise((resolveOuter) => {
     const args = ['--dangerously-skip-permissions', '--print'];
+    // Objet mutable partagé avec le registre activeProcesses : permet à
+    // cancelRunningClaude() de signaler une annulation manuelle sans
+    // dépendre d'une heuristique sur le signal reçu par le process.
+    const cancelledFlag = { value: false };
 
     let proc;
     try {
@@ -132,6 +160,7 @@ function runClaudeOnce(prompt, projectPath, onUpdate) {
         shell: false,
         stdio: ['pipe', 'pipe', 'pipe'],
       });
+      activeProcesses.set(projectPath, { proc, cancelledFlag });
     } catch (err) {
       // spawn synchrone qui throw (rare) — classe ENOENT pour beneficier du retry.
       resolveOuter({
@@ -154,6 +183,11 @@ function runClaudeOnce(prompt, projectPath, onUpdate) {
       resolved = true;
       clearInterval(updateTimer);
       clearInterval(idleTimer);
+      // Ne retire du registre que si c'est encore CETTE entrée qui y est
+      // enregistrée — un retry ENOENT relance runClaudeOnce avec un nouveau
+      // proc sur le même projectPath, on ne veut pas désenregistrer le
+      // nouveau process en nettoyant après le premier.
+      if (activeProcesses.get(projectPath)?.proc === proc) activeProcesses.delete(projectPath);
       resolveOuter(result);
     };
 
@@ -215,6 +249,10 @@ function runClaudeOnce(prompt, projectPath, onUpdate) {
     proc.stderr.on('data', handleData);
 
     proc.on('close', (code, signal) => {
+      if (cancelledFlag.value) {
+        finish({ status: 'cancelled', text: '🛑 Exécution annulée (/cancel).' });
+        return;
+      }
       finish(formatResult(output, code, signal, killed));
     });
 

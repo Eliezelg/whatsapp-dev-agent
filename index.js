@@ -4,7 +4,7 @@ import { Boom } from '@hapi/boom';
 import qrcode from 'qrcode-terminal';
 import pino from 'pino';
 import { Agent } from './agent.js';
-import { runClaude } from './runner.js';
+import { runClaude, cancelRunningClaude } from './runner.js';
 import { startNotifyServer } from './notify-server.js';
 import { createDispatcher } from './core/dispatcher.js';
 import { sendAlertEmail } from './notify-email.js';
@@ -72,6 +72,7 @@ const dispatcher = createDispatcher({
   activeSessions,
   audit,
   alertEmail: sendAlertEmail,
+  cancelRunningClaude,
 });
 
 // ─── API REST interne (app mobile) ──────────────────────────────────────────
