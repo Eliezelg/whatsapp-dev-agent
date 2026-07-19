@@ -191,10 +191,41 @@ export function createDispatcher({ agent, runClaude, validateProjectPath, detect
   return { handleMessage, getTranscript, getExecutionState };
 }
 
+// Liste de mots-clés suivie du premier mot du message (pas d'ancrage exact
+// ^...$) : couvre "ok vas-y", "oui parfait", "👍 lance" sans être trop large
+// (on ne matche que si le message COMMENCE par un des mots-clés, pas s'il
+// apparaît n'importe où — évite qu'"annule pas le rdv" soit lu comme un oui
+// à cause d'un mot piégé plus loin dans la phrase).
+const CONFIRMATION_WORDS = [
+  'oui', 'ok', 'okay', 'go', 'yes', 'yep', 'yalla', 'בסדר', 'כן', 'ouais',
+  'validé', 'valide', 'confirme', 'confirmé', 'lance', "c'est bon", 'c est bon',
+  'vas-y', 'vasy', 'nickel', 'parfait',
+];
+const REFUSAL_WORDS = [
+  'non', 'no', 'nop', 'nope', 'annule', 'annulé', 'cancel', 'stop', 'attends',
+  'attend', 'nan', 'pas encore', 'négatif',
+];
+
+// Emojis reconnus tels quels (avant tout mot), indépendamment du texte qui suit.
+const CONFIRMATION_EMOJIS = ['✅', '👍', '👌'];
+const REFUSAL_EMOJIS = ['❌', '🛑', '👎'];
+
+function startsWithAny(text, words) {
+  // Normalise la ponctuation collée au premier mot ("oui,", "ok!") en la
+  // retirant avant comparaison — "oui, vas-y" doit matcher "oui" comme
+  // "oui vas-y" le ferait déjà.
+  const t = text.trim().toLowerCase().replace(/^([^\s,!.?;:]+)[,!.?;:]+/, '$1');
+  return words.some((w) => t === w || t.startsWith(w + ' '));
+}
+
 export function isConfirmation(text) {
-  return /^(oui|ok|go|yes|yep|✅|כן|ouais|validé|confirme?|lance|c'est bon|c est bon)$/i.test(text.trim());
+  const t = text.trim();
+  if (CONFIRMATION_EMOJIS.some((e) => t.startsWith(e))) return true;
+  return startsWithAny(t, CONFIRMATION_WORDS);
 }
 
 export function isRefusal(text) {
-  return /^(non|no|nop|nope|annule?|cancel|stop|❌|attends?)$/i.test(text.trim());
+  const t = text.trim();
+  if (REFUSAL_EMOJIS.some((e) => t.startsWith(e))) return true;
+  return startsWithAny(t, REFUSAL_WORDS);
 }

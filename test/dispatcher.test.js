@@ -1,6 +1,6 @@
 import { test, mock } from 'node:test';
 import assert from 'node:assert/strict';
-import { createDispatcher } from '../core/dispatcher.js';
+import { createDispatcher, isConfirmation, isRefusal } from '../core/dispatcher.js';
 
 function makeAgent(overrides = {}) {
   return {
@@ -350,4 +350,51 @@ test('WhatsApp (sans autoConfirm): garde l\'étape de confirmation', async () =>
   // WhatsApp : demande confirmation, n'exécute PAS encore.
   assert.equal(runClaude.mock.callCount(), 0);
   assert.ok(channel.sent.some((m) => /confirme avec/i.test(m.text)), 'doit demander confirmation');
+});
+
+// ─── isConfirmation / isRefusal ─────────────────────────────────────────────
+
+test('isConfirmation: mots simples exacts', () => {
+  for (const t of ['oui', 'ok', 'go', 'yes', 'yalla', 'בסדר', 'ouais']) {
+    assert.equal(isConfirmation(t), true, `${t} devrait confirmer`);
+  }
+});
+
+test('isConfirmation: tolère un message enrichi (mot-clé + suite)', () => {
+  assert.equal(isConfirmation('ok vas-y'), true);
+  assert.equal(isConfirmation('oui parfait'), true);
+  assert.equal(isConfirmation('oui, lance ça'), true);
+});
+
+test('isConfirmation: emojis reconnus', () => {
+  assert.equal(isConfirmation('✅'), true);
+  assert.equal(isConfirmation('👍'), true);
+  assert.equal(isConfirmation('👍 vas-y'), true);
+});
+
+test('isConfirmation: ne matche pas un message qui contient le mot ailleurs qu\'au début', () => {
+  assert.equal(isConfirmation('fais un audit du serveur'), false);
+  assert.equal(isConfirmation('pas ok pour moi'), false);
+});
+
+test('isRefusal: mots simples exacts', () => {
+  for (const t of ['non', 'no', 'stop', 'annule', 'nan']) {
+    assert.equal(isRefusal(t), true, `${t} devrait refuser`);
+  }
+});
+
+test('isRefusal: tolère un message enrichi', () => {
+  assert.equal(isRefusal('non merci'), true);
+  assert.equal(isRefusal('attends une seconde'), true);
+});
+
+test('isRefusal: emojis reconnus', () => {
+  assert.equal(isRefusal('❌'), true);
+  assert.equal(isRefusal('👎'), true);
+});
+
+test('isConfirmation et isRefusal: un message neutre ne matche ni l\'un ni l\'autre', () => {
+  const neutral = 'fais un audit du vps stp';
+  assert.equal(isConfirmation(neutral), false);
+  assert.equal(isRefusal(neutral), false);
 });
