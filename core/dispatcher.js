@@ -1,5 +1,3 @@
-import { listProjects } from '../projects.js';
-
 /**
  * Cœur métier canal-agnostique : gère confirmation/refus/dispatch d'une
  * exécution Claude Code, indépendamment du canal de messagerie (WhatsApp,
@@ -18,12 +16,18 @@ import { listProjects } from '../projects.js';
  * @param {(realPath: string) => boolean} [deps.cancelRunningClaude] - kill le process
  *   claude en cours pour ce chemin (runner.js). Optionnel : si absent, /cancel répond
  *   qu'aucune annulation n'est possible plutôt que de planter.
+ * @param {() => Array<{name,description,isDefault}>} deps.listProjects - pour /status
+ *   et la validation d'existence de projet dans /cancel.
  */
-export function createDispatcher({ agent, runClaude, validateProjectPath, detectDangerousPrompt, rateLimiter, activeSessions, audit, alertEmail, cancelRunningClaude }) {
+export function createDispatcher({ agent, runClaude, validateProjectPath, detectDangerousPrompt, rateLimiter, activeSessions, audit, alertEmail, cancelRunningClaude, listProjects }) {
   // alertEmail est optionnel : si non injecté (tests, ou email non configuré),
   // les notifications d'échec sont simplement ignorées. Best-effort, jamais
   // bloquant pour le flux principal.
   const notifyFailure = typeof alertEmail === 'function' ? alertEmail : () => {};
+  // listProjects est requis en usage normal (câblé depuis index.js) ; le
+  // fallback ne sert qu'à ne pas planter un test qui n'exercerait pas
+  // /status ou /cancel et n'aurait donc pas besoin de le fournir.
+  const listProjectsSafe = typeof listProjects === 'function' ? listProjects : () => [];
 
   // ─── Transcript & état par projet (pour l'API mobile) ──────────────────────
   // Agent.history ne contient QUE les tours user/Gemini, pas les messages
@@ -60,6 +64,14 @@ export function createDispatcher({ agent, runClaude, validateProjectPath, detect
    * @returns {{cancelled: boolean, reason?: string}}
    */
   function cancelExecution(project) {
+    // Valide l'existence du projet en premier (même ordre que
+    // formatStatusMessage) — sinon une faute de frappe sur le nom de projet
+    // ("tzedaka" au lieu de "tzedakal") répond silencieusement "rien en
+    // cours" alors qu'une exécution tourne bel et bien sur le vrai projet,
+    // laissant croire à tort à l'utilisateur que tout est arrêté.
+    if (!listProjectsSafe().some((p) => p.name === project)) {
+      return { cancelled: false, reason: 'unknown_project' };
+    }
     if (!activeSessions.has(project)) {
       return { cancelled: false, reason: 'no_active_execution' };
     }
@@ -83,7 +95,7 @@ export function createDispatcher({ agent, runClaude, validateProjectPath, detect
    * s'il n'existe pas dans projects.json).
    */
   function formatStatusMessage(projectArg) {
-    const projects = listProjects();
+    const projects = listProjectsSafe();
     if (projectArg) {
       const known = projects.find((p) => p.name === projectArg);
       if (!known) {
@@ -109,6 +121,9 @@ export function createDispatcher({ agent, runClaude, validateProjectPath, detect
     if (projectArg) {
       const result = cancelExecution(projectArg);
       if (result.cancelled) return `🛑 Annulation demandée sur *${projectArg}*.`;
+      if (result.reason === 'unknown_project') {
+        return `❌ Projet "${projectArg}" introuvable. Projets : ${listProjectsSafe().map((p) => p.name).join(', ')}`;
+      }
       if (result.reason === 'not_supported') return `❌ Annulation non disponible.`;
       return `ℹ️ Aucune exécution en cours sur *${projectArg}*.`;
     }
@@ -303,12 +318,27 @@ const REFUSAL_WORDS = [
 const CONFIRMATION_EMOJIS = ['✅', '👍', '👌'];
 const REFUSAL_EMOJIS = ['❌', '🛑', '👎'];
 
+// Négations qui, juste après le mot-clé, inversent son sens : "annule PAS
+// le rdv" n'est pas un refus malgré "annule" en premier mot, "confirme PAS
+// tant que..." n'est pas une confirmation. Sans ce garde, startsWithAny ne
+// regarde que le premier mot et se fait piéger par ce cas très naturel en
+// français.
+const NEGATIONS = ['pas', 'jamais', 'surtout pas'];
+
 function startsWithAny(text, words) {
   // Normalise la ponctuation collée au premier mot ("oui,", "ok!") en la
   // retirant avant comparaison — "oui, vas-y" doit matcher "oui" comme
   // "oui vas-y" le ferait déjà.
   const t = text.trim().toLowerCase().replace(/^([^\s,!.?;:]+)[,!.?;:]+/, '$1');
-  return words.some((w) => t === w || t.startsWith(w + ' '));
+  const matchedWord = words.find((w) => t === w || t.startsWith(w + ' '));
+  if (!matchedWord) return false;
+  // Le mot juste après le mot-clé matché est-il une négation ? Ex: "annule
+  // pas le rdv" -> après "annule", le mot suivant est "pas" -> pas un match.
+  // Retire précisément le mot-clé (peut être multi-mots, ex "c'est bon"),
+  // pas juste le premier token du texte.
+  const rest = t === matchedWord ? '' : t.slice(matchedWord.length).trimStart();
+  if (NEGATIONS.some((n) => rest === n || rest.startsWith(n + ' '))) return false;
+  return true;
 }
 
 export function isConfirmation(text) {

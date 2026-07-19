@@ -388,6 +388,21 @@ test('isRefusal: tolère un message enrichi', () => {
   assert.equal(isRefusal('attends une seconde'), true);
 });
 
+test('isRefusal: une négation juste après le mot-clé inverse le sens (pas un refus)', () => {
+  // Le commentaire de startsWithAny() dans dispatcher.js dit vouloir éviter
+  // ce piège explicitement -- ce test verrouille que ça fonctionne vraiment.
+  assert.equal(isRefusal('annule pas le rdv de demain'), false);
+  assert.equal(isRefusal('annule jamais un audit sans prévenir'), false);
+  // Sans négation juste après, le mot-clé reste un vrai refus.
+  assert.equal(isRefusal('annule le rdv'), true);
+  assert.equal(isRefusal('annule'), true);
+});
+
+test('isConfirmation: une négation juste après le mot-clé inverse le sens (pas une confirmation)', () => {
+  assert.equal(isConfirmation('confirme pas encore stp'), false);
+  assert.equal(isConfirmation('confirme'), true);
+});
+
 test('isRefusal: emojis reconnus', () => {
   assert.equal(isRefusal('❌'), true);
   assert.equal(isRefusal('👎'), true);
@@ -401,6 +416,14 @@ test('isConfirmation et isRefusal: un message neutre ne matche ni l\'un ni l\'au
 
 // ─── /status et /cancel ──────────────────────────────────────────────────────
 
+// Projets mockés pour les tests /status et /cancel — listProjects est
+// maintenant une dépendance injectée (pas un import direct de
+// ../projects.js), donc chaque test doit la fournir explicitement.
+const MOCK_PROJECTS = [
+  { name: 'vps', description: 'VPS', isDefault: true },
+  { name: 'tzedakal', description: 'App tzedakal', isDefault: false },
+];
+
 test('/status sans argument liste tous les projets avec leur état', async () => {
   const agent = makeAgent();
   const channel = { name: 'whatsapp', sent: [], send: mock.fn(async function (id, t) { this.sent.push({ id, text: t }); }) };
@@ -413,6 +436,7 @@ test('/status sans argument liste tous les projets avec leur état', async () =>
     rateLimiter: { checkExecution: () => ({ allowed: true }) },
     activeSessions,
     audit: () => {},
+    listProjects: () => MOCK_PROJECTS,
   });
 
   await dispatcher.handleMessage(channel, 'user', '/status');
@@ -433,6 +457,7 @@ test('/status <projet> donne le détail d\'un projet précis', async () => {
     rateLimiter: { checkExecution: () => ({ allowed: true }) },
     activeSessions: new Set(),
     audit: () => {},
+    listProjects: () => MOCK_PROJECTS,
   });
 
   await dispatcher.handleMessage(channel, 'user', '/status vps');
@@ -451,6 +476,7 @@ test('/status <projet inconnu> renvoie une erreur claire', async () => {
     rateLimiter: { checkExecution: () => ({ allowed: true }) },
     activeSessions: new Set(),
     audit: () => {},
+    listProjects: () => MOCK_PROJECTS,
   });
 
   await dispatcher.handleMessage(channel, 'user', '/status projet-qui-n-existe-pas');
@@ -471,12 +497,39 @@ test('/cancel sans exécution active répond clairement, sans appeler cancelRunn
     activeSessions: new Set(),
     audit: () => {},
     cancelRunningClaude,
+    listProjects: () => MOCK_PROJECTS,
   });
 
   await dispatcher.handleMessage(channel, 'user', '/cancel');
 
   assert.equal(cancelRunningClaude.mock.callCount(), 0);
   assert.match(channel.sent[0].text, /Aucune exécution en cours/);
+});
+
+test('/cancel <projet inconnu> renvoie une erreur claire au lieu de "aucune exécution en cours"', async () => {
+  const agent = makeAgent();
+  const channel = { name: 'whatsapp', sent: [], send: mock.fn(async function (id, t) { this.sent.push({ id, text: t }); }) };
+  const cancelRunningClaude = mock.fn(() => true);
+
+  const dispatcher = createDispatcher({
+    agent, runClaude: mock.fn(),
+    validateProjectPath: () => ({ valid: true, realPath: '/opt/projects/vps' }),
+    detectDangerousPrompt: () => null,
+    rateLimiter: { checkExecution: () => ({ allowed: true }) },
+    activeSessions: new Set(),
+    audit: () => {},
+    cancelRunningClaude,
+    listProjects: () => MOCK_PROJECTS,
+  });
+
+  await dispatcher.handleMessage(channel, 'user', '/cancel tzedaka');
+
+  // Ne doit PAS répondre "aucune exécution en cours sur tzedaka" (message
+  // trompeur : l'utilisateur pourrait croire à tort que rien ne tourne sur
+  // le VRAI projet tzedakal, alors qu'il a juste fait une faute de frappe).
+  assert.doesNotMatch(channel.sent[0].text, /aucune exécution en cours/i);
+  assert.match(channel.sent[0].text, /introuvable/);
+  assert.equal(cancelRunningClaude.mock.callCount(), 0);
 });
 
 test('/cancel <projet> avec exécution active appelle cancelRunningClaude sur le bon realPath', async () => {
@@ -505,6 +558,7 @@ test('/cancel <projet> avec exécution active appelle cancelRunningClaude sur le
     activeSessions,
     audit: () => {},
     cancelRunningClaude,
+    listProjects: () => MOCK_PROJECTS,
   });
 
   // Lance l'exécution SANS attendre (elle ne se termine jamais dans ce test,
@@ -537,6 +591,7 @@ test('/cancel sans cancelRunningClaude injecté répond non disponible plutôt q
     rateLimiter: { checkExecution: () => ({ allowed: true }) },
     activeSessions,
     audit: () => {},
+    listProjects: () => MOCK_PROJECTS,
     // cancelRunningClaude non injecté volontairement.
   });
 

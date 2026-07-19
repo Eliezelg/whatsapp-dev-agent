@@ -73,6 +73,7 @@ const dispatcher = createDispatcher({
   audit,
   alertEmail: sendAlertEmail,
   cancelRunningClaude,
+  listProjects,
 });
 
 // ─── API REST interne (app mobile) ──────────────────────────────────────────
