@@ -16,6 +16,8 @@
  * apiToken) → testable sans réseau ni serveur HTTP réel.
  */
 
+import { safeTokenEqual } from '../auth-utils.js';
+
 /**
  * Construit le routeur API. Retourne une fonction `handle(req, res, rawBody)`
  * qui renvoie true si la requête a été prise en charge (route /api/*), false
@@ -42,7 +44,7 @@ export function createApiRouter({ apiToken, dispatcher, listProjects, getProject
 
     // Auth sur toutes les routes /api/*.
     const auth = req.headers['authorization'] || '';
-    if (auth !== `Bearer ${apiToken}`) { unauthorized(res); return true; }
+    if (!safeTokenEqual(auth, `Bearer ${apiToken}`)) { unauthorized(res); return true; }
 
     // GET /api/projects
     if (req.method === 'GET' && url === '/api/projects') {

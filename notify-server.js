@@ -11,6 +11,7 @@
 
 import { createServer } from 'http';
 import { redactSecrets } from './security.js';
+import { safeTokenEqual } from './auth-utils.js';
 
 const NOTIFY_PORT = 5111;
 const NOTIFY_TOKEN = process.env.NOTIFY_TOKEN;
@@ -68,7 +69,7 @@ export function startNotifyServer(getSock, ownerJid, apiRouter = null) {
       }
 
       const auth = req.headers['authorization'] || '';
-      if (auth !== `Bearer ${NOTIFY_TOKEN}`) {
+      if (!safeTokenEqual(auth, `Bearer ${NOTIFY_TOKEN}`)) {
         res.writeHead(401).end('unauthorized');
         return;
       }
