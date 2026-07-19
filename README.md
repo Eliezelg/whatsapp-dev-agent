@@ -17,7 +17,7 @@ Updates toutes les 60s + résultat final → WhatsApp
 - **Conversation multi-turns** — Gemini Flash comprend ta demande, pose des questions si besoin
 - **Confirmation avant exécution** — résumé de ce qui va être fait, tu approuves avec "ok"
 - **Updates en temps réel** — toutes les 60 secondes pendant l'exécution
-- **Multi-projets** — `/projets`, `/default <nom>`, `/add <nom> <path>`
+- **Multi-projets** — `/projets`, `/default <nom>`, `/add <nom> <path>`, `/status`, `/cancel`
 - **Sécurité** — whitelist sur ton numéro uniquement
 
 ## Prérequis
@@ -98,6 +98,8 @@ Tu réponds `ok` → Claude Code se lance → updates toutes les 60s → résult
 | `/projets` | Liste les projets configurés |
 | `/default <nom>` | Changer le projet par défaut |
 | `/add <nom> <path>` | Ajouter un projet |
+| `/status [projet]` | État des exécutions en cours (tous les projets, ou un seul) |
+| `/cancel [projet]` | Annuler une exécution en cours |
 | `/reset` | Réinitialiser la conversation |
 | `/help` | Aide |
 
@@ -254,7 +256,7 @@ whatsapp-agent/
 pour le process Claude Code enfant — il ne lit jamais le `~/.claude/` réel du
 user système. Un `CLAUDE.md` placé dans `.claude-runtime-home/` sert donc de
 règles globales pour **toute** tâche Claude Code déclenchée via cet agent,
-quel que soit le projet ciblé (`vps`, `tzedakal`, `familink`, `gmah`, ou tout
+quel que soit le projet ciblé (`vps`, `tzedakal`, `gmah`, `villaaviv`, ou tout
 projet ajouté via `/add`) — équivalent d'un `~/.claude/CLAUDE.md` mais
 scopé à cet orchestrateur.
 
