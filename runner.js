@@ -153,9 +153,16 @@ function runClaudeOnce(prompt, projectPath, onUpdate) {
         childEnv.ANTHROPIC_API_KEY = process.env.ANTHROPIC_API_KEY;
       }
 
+      // Pas d'option `timeout` native de spawn() : sur un échec ENOENT, Node
+      // garde en interne le setTimeout qu'elle crée pour cette option, non
+      // nettoyé, ce qui empêche le process wa-agent de se terminer même
+      // après resolution — reproduit et confirmé en isolation (avec l'option
+      // `timeout`, le process bloque indéfiniment sur un spawn ENOENT ; sans,
+      // il se termine normalement). Le timeout de 30 min est donc réimplémenté
+      // manuellement ci-dessous (hardTimeout), nettoyé comme updateTimer/
+      // idleTimer dans finish() — même garantie, sans le bug de Node.
       proc = spawn(CLAUDE_BIN, args, {
         cwd: projectPath,
-        timeout: MAX_TIMEOUT_MS,
         env: childEnv,
         shell: false,
         stdio: ['pipe', 'pipe', 'pipe'],
@@ -183,11 +190,13 @@ function runClaudeOnce(prompt, projectPath, onUpdate) {
       resolved = true;
       clearInterval(updateTimer);
       clearInterval(idleTimer);
+      clearTimeout(hardTimeout);
       // Ne retire du registre que si c'est encore CETTE entrée qui y est
       // enregistrée — un retry ENOENT relance runClaudeOnce avec un nouveau
       // proc sur le même projectPath, on ne veut pas désenregistrer le
       // nouveau process en nettoyant après le premier.
       if (activeProcesses.get(projectPath)?.proc === proc) activeProcesses.delete(projectPath);
+      proc?.removeAllListeners();
       resolveOuter(result);
     };
 
@@ -230,6 +239,18 @@ function runClaudeOnce(prompt, projectPath, onUpdate) {
         output += `\n\n[KILLED: aucune activité depuis ${IDLE_TIMEOUT_MS / 60000} min]`;
       }
     }, 30_000);
+
+    // Timeout dur réimplémenté manuellement (voir commentaire sur le spawn()
+    // plus haut) : remplace l'option native `timeout` de spawn(), qui laisse
+    // fuir un timer interne non nettoyé sur un échec ENOENT et empêche le
+    // process wa-agent de se terminer. clearTimeout(hardTimeout) dans
+    // finish() garantit qu'il ne fuit jamais.
+    const hardTimeout = setTimeout(() => {
+      if (killed) return;
+      killed = true;
+      try { proc.kill('SIGKILL'); } catch {}
+      output += `\n\n[KILLED: dépassé le timeout de ${MAX_TIMEOUT_MS / 60000} min]`;
+    }, MAX_TIMEOUT_MS);
 
     const handleData = (chunk) => {
       lastDataAt = Date.now();
