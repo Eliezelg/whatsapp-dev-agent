@@ -30,6 +30,14 @@ SessionEntry de journalctl, sans toucher aux logs applicatifs). La cause racine
 de la désync Signal reste non résolue mais bénigne (aucune perte de message
 observée à ce jour). L'entrée reste ouverte tant que la cause n'est pas comprise.
 
+**MAJ 2026-07-19** : `auth.corrupt.20260623_210821/` (13 Mo) a été supprimé —
+aucune investigation n'a été menée dessus en presque un mois, la session
+`auth/` actuelle est stable depuis, et le lien supposé avec le bruit Bad MAC
+n'a jamais été établi. Si le bruit Bad MAC réapparaît en rafale après un futur
+redémarrage, ce ne sera donc plus une piste disponible — repartir de zéro sur
+l'hypothèse d'origine (re-livraison de messages chiffrés avec une clé de
+session périmée) si besoin.
+
 ---
 
 ## 2026-07-02 — `runner.js` — cause racine du `spawn ENOENT` transitoire non identifiée
@@ -70,3 +78,39 @@ hardening plus strict que la réalité).
 **Action proposée** : régénérer `whatsapp-agent.service` dans le repo à partir
 du fichier déployé réel, pour que la source de vérité versionnée corresponde à
 la prod.
+
+**MAJ 2026-07-19** : partiellement traité. `SECURITY.md` §5 documente
+désormais explicitement l'écart (avertissements en tête de section + inline
+sur les 3 directives concernées) — un lecteur de la doc ne peut plus croire à
+un hardening plus fort que la réalité. `StartLimitIntervalSec`/`StartLimitBurst`
+étaient en plus mal placés dans les DEUX fichiers ([Service] au lieu de
+[Unit], anti-boucle de crash inopérant) — corrigé dans le repo et en prod
+(`systemd-analyze verify` propre depuis). Reste non fait : le fichier
+`whatsapp-agent.service` du repo n'a toujours pas été régénéré pour retirer
+les 3 directives incompatibles (`SystemCallFilter`, `MemoryDenyWriteExecute`,
+`RestrictRealtime`) — elles y figurent toujours comme exemple de référence,
+maintenant avec des avertissements, mais un `cp` naïf du repo vers
+`/etc/systemd/system/` casserait encore le service. Si l'action de fond est
+faite un jour, retirer aussi les avertissements devenus inutiles.
+
+---
+
+## 2026-07-19 — `projects.json` — chemins `/workspaces/*` fantômes (résolu)
+
+**Contexte** : `tzedakal`, `familink`, `gmah` pointaient vers `/workspaces/*`,
+un dossier vide sur le VPS — seul le projet spécial `vps` (cwd neutre, pas un
+vrai repo) était valide. Les vrais projets vivent sous `/opt/projects/*`.
+Cassait systématiquement toute tâche WhatsApp sur 3 des 4 projets déclarés
+(erreur de chemin renvoyée à l'utilisateur, sans exécution dans le mauvais
+dossier — `validateProjectPath` a bien fait son travail de garde-fou).
+
+**Trouvé** : lors d'un audit à 4 agents (sécu/fiabilité/architecture/UX), pas
+mentionné dans ce fichier avant cette date — dette non trackée jusqu'ici.
+
+**Résolu** : `tzedakal` → `/opt/projects/tzedakal`, `gmah` →
+`/opt/projects/gmah`, ajout de `villaaviv` → `/opt/projects/villaaviv`
+(existait sur disque, jamais déclaré). `familink` retiré : son seul repo
+connu (`/opt/familink-agent/repo`) appartient à l'utilisateur
+`familink-agent` avec des permissions (`750`, pas de groupe partagé) qui
+bloquent l'accès à `wa-agent` — à ré-ajouter si l'accès est un jour ouvert
+(ACL ou groupe partagé), pas avant.
