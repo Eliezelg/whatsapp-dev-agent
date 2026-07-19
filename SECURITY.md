@@ -318,6 +318,22 @@ sudo -u wa-agent bash -c 'cd /opt/whatsapp-agent && node index.js'
 
 ## 5. Systemd hardening (durci)
 
+> ⚠️ **Écart connu doc/prod** (voir aussi `TODO-ERRORS.md`) : le fichier
+> déployé en prod (`/etc/systemd/system/whatsapp-agent.service`) diffère de
+> la version ci-dessous sur 3 points, retirés le 2026-05-06 (commit 7b5ce4c) suite à un crash
+> `V8 Fatal error: SIGSYS` — Claude Code (Bun-compiled) appelle
+> `sched_setscheduler` au boot et fait du JIT mémoire (V8), ce qui est
+> incompatible avec ces trois directives :
+> - `MemoryDenyWriteExecute=true` → retiré (mis à `false` en prod)
+> - `SystemCallFilter=@system-service` + la ligne `~@privileged ...` → retiré
+> - `RestrictRealtime=true` → retiré
+>
+> Le reste du hardening ci-dessous (`NoNewPrivileges`, `ProtectSystem=strict`,
+> capabilities vides, `RestrictNamespaces`, etc.) est bien actif en prod.
+> `ReadWritePaths` est aussi plus large en prod (`/opt/whatsapp-agent` entier,
+> pas seulement `auth/` + `logs/`) — dérive trackée dans `TODO-ERRORS.md`, pas
+> encore resserrée.
+
 Remplace le `whatsapp-agent.service` par cette version durcie :
 
 ```ini
@@ -364,6 +380,8 @@ CapabilityBoundingSet=
 AmbientCapabilities=
 
 # System calls — bloque les dangereux
+# ⚠️ INCOMPATIBLE avec Claude Code en prod (SIGSYS sur sched_setscheduler) —
+# voir l'avertissement en tête de section. Retiré du fichier réellement déployé.
 SystemCallArchitectures=native
 SystemCallFilter=@system-service
 SystemCallFilter=~@privileged @resources @mount @swap @reboot @raw-io @cpu-emulation @debug @keyring @module @obsolete
@@ -376,11 +394,19 @@ TasksMax=200
 
 # Lock memory pour empêcher swap des secrets
 LockPersonality=true
+# ⚠️ INCOMPATIBLE avec Claude Code en prod (V8 fait du JIT mémoire) — mis à
+# false dans le fichier réellement déployé. Voir avertissement en tête de section.
 MemoryDenyWriteExecute=true
+# ⚠️ INCOMPATIBLE avec Claude Code en prod — retiré du fichier réellement déployé.
 RestrictRealtime=true
 RestrictNamespaces=true
 RestrictSUIDSGID=true
 RemoveIPC=true
+
+# Auto-restart limits (anti boucle de crash) — DOIT être en [Unit], pas ici.
+# StartLimitIntervalSec / StartLimitBurst sont silencieusement ignorés par
+# systemd s'ils sont placés dans [Service] (aucune erreur au démarrage, juste
+# un warning au boot) — corrigé en prod le 2026-07-19, voir git log.
 
 # Logs
 StandardOutput=journal
@@ -402,6 +428,10 @@ systemctl status whatsapp-agent
 # Vérifier les protections actives
 systemd-analyze security whatsapp-agent
 # Score cible : "OK" ou "GOOD" (< 3.0)
+
+# Vérifier qu'aucune directive n'est silencieusement ignorée (clé mal placée,
+# typo) — doit ne rien afficher :
+systemd-analyze verify whatsapp-agent.service
 ```
 
 ---
@@ -576,6 +606,81 @@ boot avec `apiKeyHelper` configuré. Claude Code lira la clé via ce script
 | Exécutions/heure | 20 | `security.js → RATE_LIMITS` |
 | Exécutions/jour | 100 | idem |
 | Messages/min | 30 | idem |
+
+---
+
+### 7.5 Exposition réseau — canal API mobile (port 5111) et Tailscale
+
+`notify-server.js` bind sur `127.0.0.1:5111` en local, mais **ce port est
+déjà exposé sur le tailnet Tailscale en prod** (`tailscale status` montre
+`100.94.195.126:5111 LISTEN`) — ce n'est pas une exposition "prévue pour
+plus tard" comme le laissaient penser les commentaires historiques du code,
+c'est actif dès aujourd'hui, dès qu'un device rejoint le tailnet.
+
+Ce que ça implique concrètement :
+
+- **Le canal API (`channels/api.js`) a `autoConfirm: true`** — contrairement
+  au canal WhatsApp, une requête `POST /api/dispatch` valide (bon token)
+  déclenche l'exécution Claude Code **sans étape de confirmation "oui"**.
+- La seule barrière est le token `API_TOKEN` (Bearer). Depuis le
+  2026-07-19, la comparaison est en temps constant
+  (`auth-utils.js:safeTokenEqual`, voir git log) — avant cette date, une
+  comparaison `!==` classique était théoriquement vulnérable à une timing
+  attack réseau.
+- Aujourd'hui (état constaté), 2 devices sont sur le tailnet (le VPS + un
+  Android hors-ligne). La fenêtre d'exploitation réelle est faible, mais
+  **grandit avec chaque device ajouté au tailnet** — un device compromis ou
+  mal configuré sur le tailnet pourrait atteindre ce port.
+
+**Recommandations non appliquées (à ta discrétion, pas critiques vu le
+nombre de devices actuel)** :
+
+- Restreindre l'accès au port 5111 via les **ACLs Tailscale** (console
+  Tailscale → Access controls) pour que seuls les devices explicitement
+  autorisés (ton téléphone, pas tout le tailnet) puissent l'atteindre.
+- Envisager de retirer `autoConfirm` du canal API si l'app mobile n'est pas
+  encore activement utilisée, ou d'ajouter une seconde barrière (liste
+  stricte de `senderId` autorisés, pas seulement le token).
+
+Voir aussi la section "12.2 Si l'agent fait n'importe quoi" pour la marche à
+suivre en cas de doute sur ce canal.
+
+### 7.6 Autofix Sentry (`sentry-watch`) — autonomie assumée jusqu'au push
+
+`scripts/sentry-watch.js` (timer systemd, poll toutes les 5 min) dispatch
+automatiquement les nouvelles issues Sentry vers le pipeline `/api/dispatch`
+(donc via le canal API `autoConfirm` décrit ci-dessus) avec pour instruction
+d'aller **jusqu'au `git commit` + `git push`** si Claude Code juge le fix
+sûr — sans confirmation humaine.
+
+**C'est un choix de design assumé**, pas un oubli : l'objectif est un
+autofix vraiment autonome 24/7. Le risque principal est l'injection
+indirecte — les champs Sentry (`title`, `culprit`, message d'exception)
+peuvent contenir des données saisies par un utilisateur final de l'app (un
+champ de formulaire mal validé qui finit dans une stacktrace), qui sont
+injectées telles quelles dans le prompt envoyé à Claude Code.
+
+Mitigations en place (depuis le 2026-07-19, voir git log) :
+
+- `sanitizeUntrustedField()` neutralise les tournures d'injection de prompt
+  connues (`ignore/disregard/forget` + instructions, faux marqueurs
+  `system:`/`assistant:`, tentatives de casser la délimitation du bloc).
+- Le bloc de données Sentry est explicitement délimité dans le prompt
+  (`--- DONNÉES SENTRY (non fiables) ---` / `--- FIN DONNÉES SENTRY ---`)
+  avec une consigne claire de ne pas traiter son contenu comme des
+  instructions.
+- `detectDangerousPrompt` (section 7.2) s'applique sur ce prompt comme sur
+  n'importe quel autre — filet de dernière ligne, contournable en théorie
+  (voir limite en 7.2), pas une garantie absolue.
+- Chaque dispatch autonome est loggé explicitement (`AUTOFIX AUTONOME` dans
+  journalctl) et notifié sur WhatsApp avec la mention "autonome, sans
+  confirmation" — traçabilité, pas prévention.
+
+Si tu veux revenir sur ce choix : la modification à faire est de retirer
+`autoConfirm` du canal API pour les dispatches provenant de `sentry-watch`
+spécifiquement (nécessite de distinguer ce sender dans le dispatcher), ou
+plus simplement de désactiver `sentry-watch.timer` et de traiter les issues
+Sentry manuellement via WhatsApp.
 
 ---
 
