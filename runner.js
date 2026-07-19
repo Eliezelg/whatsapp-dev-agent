@@ -230,7 +230,7 @@ function runClaudeOnce(prompt, projectPath, onUpdate) {
   });
 }
 
-function extractPreview(output) {
+export function extractPreview(output) {
   const cleaned = redactSecrets(output);
   const lines = cleaned
     .split('\n')
@@ -247,7 +247,7 @@ function extractPreview(output) {
  *   normale meme si exit code != 0 (Claude a tourné, c'est un resultat legitime
  *   a montrer, pas une panne d'infra a alerter).
  */
-function formatResult(output, exitCode, signal, killed) {
+export function formatResult(output, exitCode, signal, killed) {
   let label;
   let status;
   if (killed) { label = '⛔ Tué (limite atteinte)'; status = 'killed'; }

@@ -4,3 +4,4 @@ logs/
 .claude-runtime-home/
 .env
 *.log
+test/.tmp/
