@@ -289,3 +289,65 @@ test('getExecutionState: reflète active via activeSessions', () => {
   assert.deepEqual(dispatcher.getExecutionState('vps'), { project: 'vps', active: true, lastUpdate: null });
   assert.deepEqual(dispatcher.getExecutionState('familink'), { project: 'familink', active: false, lastUpdate: null });
 });
+
+test('autoConfirm: canal API exécute directement sans étape de confirmation', async () => {
+  // agent.chat renvoie type:confirm ; sur un canal autoConfirm, on doit
+  // enchaîner directement sur l'exécution (pas de message "confirme avec ok").
+  const agent = makeAgent({
+    chat: mock.fn(async () => ({
+      type: 'confirm',
+      summary: 'Audit rapide',
+      project: 'vps',
+      projectPath: '/opt/projects/vps',
+      prompt: 'fais un audit',
+    })),
+  });
+  // Le dispatcher lit pendingExecution sur l'agent : chat() le pose normalement.
+  agent.chat = mock.fn(async () => {
+    agent.pendingExecution = { project: 'vps', projectPath: '/opt/projects/vps', prompt: 'fais un audit', summary: 'Audit rapide' };
+    return { type: 'confirm', summary: 'Audit rapide', project: 'vps', projectPath: '/opt/projects/vps', prompt: 'fais un audit' };
+  });
+  const channel = { name: 'api', autoConfirm: true, sent: [], send: mock.fn(async function (id, t) { this.sent.push({ id, text: t }); }) };
+  const runClaude = mock.fn(async () => ({ status: 'ok', text: '✅ Terminé\n\naudit ok' }));
+
+  const dispatcher = createDispatcher({
+    agent, runClaude,
+    validateProjectPath: () => ({ valid: true, realPath: '/opt/projects/vps' }),
+    detectDangerousPrompt: () => null,
+    rateLimiter: { checkExecution: () => ({ allowed: true }) },
+    activeSessions: new Set(),
+    audit: () => {},
+  });
+
+  await dispatcher.handleMessage(channel, 'android', 'fais un audit du vps');
+
+  // Pas de message "confirme avec ok" ; runClaude appelé directement.
+  assert.equal(runClaude.mock.callCount(), 1);
+  assert.ok(!channel.sent.some((m) => /confirme avec/i.test(m.text)), 'ne doit pas demander de confirmation');
+  assert.ok(channel.sent.some((m) => /audit ok/.test(m.text)), 'le résultat doit être envoyé');
+});
+
+test('WhatsApp (sans autoConfirm): garde l\'étape de confirmation', async () => {
+  const agent = makeAgent();
+  agent.chat = mock.fn(async () => {
+    agent.pendingExecution = { project: 'vps', projectPath: '/opt/projects/vps', prompt: 'p', summary: 's' };
+    return { type: 'confirm', summary: 's', project: 'vps', projectPath: '/opt/projects/vps', prompt: 'p' };
+  });
+  const channel = { name: 'whatsapp', sent: [], send: mock.fn(async function (id, t) { this.sent.push({ id, text: t }); }) };
+  const runClaude = mock.fn(async () => ({ status: 'ok', text: '✅' }));
+
+  const dispatcher = createDispatcher({
+    agent, runClaude,
+    validateProjectPath: () => ({ valid: true, realPath: '/opt/projects/vps' }),
+    detectDangerousPrompt: () => null,
+    rateLimiter: { checkExecution: () => ({ allowed: true }) },
+    activeSessions: new Set(),
+    audit: () => {},
+  });
+
+  await dispatcher.handleMessage(channel, 'user', 'fais un audit');
+
+  // WhatsApp : demande confirmation, n'exécute PAS encore.
+  assert.equal(runClaude.mock.callCount(), 0);
+  assert.ok(channel.sent.some((m) => /confirme avec/i.test(m.text)), 'doit demander confirmation');
+});

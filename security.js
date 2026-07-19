@@ -9,7 +9,7 @@
  * - Limite de longueur des messages entrants
  */
 
-import { existsSync, mkdirSync, appendFileSync, realpathSync } from 'fs';
+import { existsSync, mkdirSync, appendFileSync, realpathSync, statSync } from 'fs';
 import { dirname, resolve, isAbsolute } from 'path';
 import { fileURLToPath } from 'url';
 
@@ -153,6 +153,18 @@ export function validateProjectPath(projectPath) {
   ];
   if (FORBIDDEN_PATTERNS.some((p) => p.test(realPath))) {
     return { valid: false, reason: 'Chemin système interdit' };
+  }
+
+  // Le répertoire doit exister ET être un dossier. Sinon spawn(cwd) échoue plus
+  // tard avec un ENOENT obscur ; on renvoie ici un message clair et actionnable.
+  let stat;
+  try {
+    stat = statSync(realPath);
+  } catch {
+    return { valid: false, reason: `Le répertoire du projet n'existe pas sur le serveur (${realPath})` };
+  }
+  if (!stat.isDirectory()) {
+    return { valid: false, reason: `Le chemin du projet n'est pas un répertoire (${realPath})` };
   }
 
   return { valid: true, realPath };

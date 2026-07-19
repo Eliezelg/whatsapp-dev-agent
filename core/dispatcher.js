@@ -87,6 +87,16 @@ export function createDispatcher({ agent, runClaude, validateProjectPath, detect
     }
 
     if (response.type === 'confirm') {
+      // Canal auto-confirmant (API mobile) : l'utilisateur a explicitement tapé
+      // une tâche pour un projet précis, pas besoin d'une étape de confirmation
+      // "ok" (qui n'a pas de sens dans le flux app). On enchaîne directement sur
+      // l'exécution. Sur WhatsApp (autoConfirm absent), le comportement reste
+      // inchangé : on affiche la confirmation et on attend le "ok".
+      if (channel.autoConfirm) {
+        audit('exec_autoconfirm', { project: response.project, channel: channel.name });
+        await executeConfirmed(channel, senderId);
+        return;
+      }
       audit('exec_pending', { project: response.project, channel: channel.name });
       const confirmMsg =
         `📋 *Voici ce que je vais faire :*\n\n${response.summary}\n\n` +

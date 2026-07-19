@@ -80,7 +80,7 @@ const dispatcher = createDispatcher({
 // Le canal 'api' a un send no-op : les messages d'exécution sont déjà
 // journalisés dans le transcript du dispatcher (servi via GET /api/transcript).
 const API_TOKEN = process.env.API_TOKEN;
-const apiChannel = { name: 'api', send: async () => {} };
+const apiChannel = { name: 'api', autoConfirm: true, send: async () => {} };
 const apiRouter = API_TOKEN
   ? createApiRouter({
       apiToken: API_TOKEN,
