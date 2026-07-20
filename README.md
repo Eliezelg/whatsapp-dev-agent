@@ -256,7 +256,7 @@ whatsapp-agent/
 pour le process Claude Code enfant — il ne lit jamais le `~/.claude/` réel du
 user système. Un `CLAUDE.md` placé dans `.claude-runtime-home/` sert donc de
 règles globales pour **toute** tâche Claude Code déclenchée via cet agent,
-quel que soit le projet ciblé (`vps`, `tzedakal`, `gmah`, `villaaviv`, ou tout
+quel que soit le projet ciblé (`vps`, `tzedakal`, `gmah`, `villaaviv`, `familink`, ou tout
 projet ajouté via `/add`) — équivalent d'un `~/.claude/CLAUDE.md` mais
 scopé à cet orchestrateur.
 
