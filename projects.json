@@ -16,6 +16,10 @@
     "villaaviv": {
       "path": "/opt/projects/villaaviv",
       "description": "Projet villaaviv"
+    },
+    "familink": {
+      "path": "/opt/familink-agent/repo",
+      "description": "Monorepo familink (Next.js web, NestJS api, mobile, admin) — attention: repo partage avec familink-agent (autre service), ne pas casser son autonomie"
     }
   }
 }
