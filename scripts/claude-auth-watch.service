@@ -1,0 +1,30 @@
+[Unit]
+Description=Sonde d'authentification Claude Code (alerte email si expiration)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=wa-agent
+EnvironmentFile=/etc/whatsapp-agent.env
+StateDirectory=claude-auth-watch
+ExecStart=/usr/bin/node /opt/whatsapp-agent/app/scripts/claude-auth-watch.js
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=claude-auth-watch
+
+# Limites
+TimeoutStartSec=300
+MemoryMax=512M
+TasksMax=64
+
+# Hardening (aligné sur sentry-watch : pas de root, système en lecture seule).
+# ProtectHome=false : le HOME runtime de Claude Code est sous /opt/whatsapp-agent,
+# mais le binaire lit aussi des caches sous l'arborescence du user.
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ReadWritePaths=/opt/whatsapp-agent
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true

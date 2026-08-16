@@ -1,0 +1,10 @@
+[Unit]
+Description=Vérifie l'authentification Claude Code une fois par jour
+
+[Timer]
+OnCalendar=daily
+Persistent=true
+RandomizedDelaySec=30min
+
+[Install]
+WantedBy=timers.target
