@@ -69,8 +69,28 @@ function saveState(state) {
  */
 function probeClaude() {
   return new Promise((resolve) => {
+    // L'environnement reproduit EXACTEMENT la liste blanche de runner.js
+    // (PATH / HOME / USER + token), et non `{...process.env}`. C'est le coeur
+    // de la sonde : le runner n'expose au sous-processus qu'une poignée de
+    // variables, donc hériter de tout l'env systemd testerait un chemin que
+    // le pipeline n'emprunte jamais. Cette erreur a réellement été commise le
+    // 2026-08-16 — la sonde passait au vert pendant que l'autofix échouait sur
+    // "OAuth session expired". Toute divergence avec runner.js:147+ rend cette
+    // sonde mensongère : les deux listes doivent rester synchronisées.
+    const childEnv = {
+      PATH: process.env.PATH,
+      HOME: CLAUDE_HOME,
+      USER: 'wa-agent',
+    };
+    if (process.env.CLAUDE_CODE_OAUTH_TOKEN) {
+      childEnv.CLAUDE_CODE_OAUTH_TOKEN = process.env.CLAUDE_CODE_OAUTH_TOKEN;
+    }
+    if (process.env.ANTHROPIC_API_KEY) {
+      childEnv.ANTHROPIC_API_KEY = process.env.ANTHROPIC_API_KEY;
+    }
+
     const child = spawn(CLAUDE_BIN, ['-p', 'Reponds exactement: OK'], {
-      env: { ...process.env, HOME: CLAUDE_HOME },
+      env: childEnv,
       stdio: ['ignore', 'pipe', 'pipe'],
     });
 

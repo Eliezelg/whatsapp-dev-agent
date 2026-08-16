@@ -152,6 +152,17 @@ function runClaudeOnce(prompt, projectPath, onUpdate) {
       if (!API_KEY_HELPER && process.env.ANTHROPIC_API_KEY) {
         childEnv.ANTHROPIC_API_KEY = process.env.ANTHROPIC_API_KEY;
       }
+      // Mode "compte Max" avec token longue duree : depuis le 2026-08-16 l'auth
+      // ne passe plus par ~/.claude/.credentials.json (token OAuth expire le
+      // 2026-07-21, refresh impossible) mais par CLAUDE_CODE_OAUTH_TOKEN. Sans
+      // ce passe-plat explicite, Claude Code retombe sur le fichier expire et
+      // echoue avec "OAuth session expired and could not be refreshed" : le
+      // pipeline devient muet sans autre signal, exactement la panne de 26 jours
+      // de juillet-aout 2026. La liste blanche reste stricte par ailleurs — les
+      // autres secrets de l'agent (Gemini, Resend, API_TOKEN) ne sont pas exposes.
+      if (!API_KEY_HELPER && process.env.CLAUDE_CODE_OAUTH_TOKEN) {
+        childEnv.CLAUDE_CODE_OAUTH_TOKEN = process.env.CLAUDE_CODE_OAUTH_TOKEN;
+      }
 
       // Pas d'option `timeout` native de spawn() : sur un échec ENOENT, Node
       // garde en interne le setTimeout qu'elle crée pour cette option, non
