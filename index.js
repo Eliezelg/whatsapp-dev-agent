@@ -8,6 +8,7 @@ import { runClaude } from './runner.js';
 import { startNotifyServer } from './notify-server.js';
 import { createDispatcher } from './core/dispatcher.js';
 import { sendAlertEmail } from './notify-email.js';
+import { createDisconnectAlert } from './disconnect-alert.js';
 import { createApiRouter } from './channels/api.js';
 import { listProjects, getProject } from './projects.js';
 import {
@@ -93,43 +94,13 @@ const apiRouter = API_TOKEN
   : null;
 
 // ─── Alerte de déconnexion WhatsApp prolongée ───────────────────────────────
-// Etat module-level (hors startBot, qui est rappelée à chaque reconnexion).
-const DISCONNECT_ALERT_MS = 5 * 60 * 1000; // seuil avant 1re alerte
-const DISCONNECT_REMINDER_MS = 30 * 60 * 1000; // rappel tant que déconnecté
-let disconnectAlertTimer = null;
-let disconnectedSince = null;
-let disconnectAlerted = false;
-
-function onDisconnected() {
-  if (disconnectedSince) return; // déjà en cours de suivi
-  disconnectedSince = Date.now();
-  disconnectAlerted = false;
-  disconnectAlertTimer = setTimeout(function fire() {
-    disconnectAlerted = true;
-    const minutes = Math.round((Date.now() - disconnectedSince) / 60000);
-    sendAlertEmail(
-      'WhatsApp déconnecté',
-      `whatsapp-agent est déconnecté de WhatsApp depuis ~${minutes}min et ne parvient pas à se reconnecter. Vérifie le service (journalctl -u whatsapp-agent) — un rescan du QR est peut-être nécessaire.`,
-    );
-    // Reprogramme un rappel tant que la déconnexion persiste.
-    disconnectAlertTimer = setTimeout(fire, DISCONNECT_REMINDER_MS);
-  }, DISCONNECT_ALERT_MS);
-}
-
-function onReconnected() {
-  if (!disconnectedSince) return;
-  const minutes = Math.round((Date.now() - disconnectedSince) / 60000);
-  const wasAlerted = disconnectAlerted;
-  if (disconnectAlertTimer) clearTimeout(disconnectAlertTimer);
-  disconnectAlertTimer = null;
-  disconnectedSince = null;
-  disconnectAlerted = false;
-  // N'envoie un email de reprise QUE si une alerte de déconnexion était partie
-  // (sinon les cycles close→open normaux de ~1s spammeraient des "reconnecté").
-  if (wasAlerted) {
-    sendAlertEmail('WhatsApp reconnecté', `whatsapp-agent a retrouvé la connexion WhatsApp après ~${minutes}min d'indisponibilité.`);
-  }
-}
+// Un seul mail par incident (déconnexion), un seul à la reprise. La logique et
+// le pourquoi du non-rappel vivent dans disconnect-alert.js.
+const DISCONNECT_ALERT_MS = 5 * 60 * 1000; // seuil avant l'alerte
+const { onDisconnected, onReconnected } = createDisconnectAlert({
+  sendAlert: sendAlertEmail,
+  thresholdMs: DISCONNECT_ALERT_MS,
+});
 
 const whatsappChannel = {
   name: 'whatsapp',
