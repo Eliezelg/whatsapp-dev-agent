@@ -93,6 +93,22 @@ maintenant avec des avertissements, mais un `cp` naïf du repo vers
 `/etc/systemd/system/` casserait encore le service. Si l'action de fond est
 faite un jour, retirer aussi les avertissements devenus inutiles.
 
+**RÉSOLU 2026-09-21** : action de fond faite. `whatsapp-agent.service` du
+repo est régénéré depuis l'unité active et vérifié identique directive par
+directive ; `WorkingDirectory` pointait `/opt/whatsapp-agent` alors que le
+code vit dans `app/`, donc un `cp` du repo empêchait le service de démarrer.
+Le bloc `ini` de `SECURITY.md` §5, qui portait la même erreur et les 3
+directives incompatibles, est remplacé par la copie conforme du fichier ;
+les avertissements d'écart sont retirés, seule subsiste la note expliquant
+pourquoi ces directives ne doivent pas être réintroduites.
+
+**Reste ouvert** : `ReadWritePaths` vaut `/opt/whatsapp-agent` entier dans
+l'unité active, là où `auth/` + `logs/` suffiraient. Le repo reflète désormais
+la valeur réelle plutôt qu'une valeur souhaitée, mais le resserrement lui-même
+n'est pas fait : il demande de vérifier ce que Claude Code écrit hors de ces
+deux dossiers (cache, état, fichiers temporaires) avant de restreindre, sous
+peine de casser l'autofix.
+
 ---
 
 ## 2026-07-19 — `projects.json` — chemins `/workspaces/*` fantômes (résolu)

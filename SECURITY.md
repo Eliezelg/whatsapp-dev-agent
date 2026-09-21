@@ -318,27 +318,25 @@ sudo -u wa-agent bash -c 'cd /opt/whatsapp-agent && node index.js'
 
 ## 5. Systemd hardening (durci)
 
-> ⚠️ **Écart connu doc/prod** (voir aussi `TODO-ERRORS.md`) : le fichier
-> déployé en prod (`/etc/systemd/system/whatsapp-agent.service`) diffère de
-> la version ci-dessous sur 3 points, retirés le 2026-05-06 (commit 7b5ce4c) suite à un crash
-> `V8 Fatal error: SIGSYS` — Claude Code (Bun-compiled) appelle
-> `sched_setscheduler` au boot et fait du JIT mémoire (V8), ce qui est
-> incompatible avec ces trois directives :
-> - `MemoryDenyWriteExecute=true` → retiré (mis à `false` en prod)
-> - `SystemCallFilter=@system-service` + la ligne `~@privileged ...` → retiré
-> - `RestrictRealtime=true` → retiré
+> **Note** : les directives `SystemCallFilter`, `MemoryDenyWriteExecute=true`
+> et `RestrictRealtime=true` ont été retirées le 2026-05-06 (commit `7b5ce4c`)
+> suite à un crash `V8 Fatal error: SIGSYS` : Claude Code (Bun-compiled)
+> appelle `sched_setscheduler` au boot et fait du JIT mémoire (V8), ce qui
+> est incompatible avec elles. Ne pas les réintroduire sans tester.
 >
-> Le reste du hardening ci-dessous (`NoNewPrivileges`, `ProtectSystem=strict`,
-> capabilities vides, `RestrictNamespaces`, etc.) est bien actif en prod.
-> `ReadWritePaths` est aussi plus large en prod (`/opt/whatsapp-agent` entier,
-> pas seulement `auth/` + `logs/`) — dérive trackée dans `TODO-ERRORS.md`, pas
-> encore resserrée.
+> Le bloc ci-dessous est désormais la copie conforme du fichier versionné
+> (`whatsapp-agent.service`), lui-même aligné sur l'unité active. L'écart
+> doc/prod tracké dans `TODO-ERRORS.md` (2026-07-02) est résorbé.
 
-Remplace le `whatsapp-agent.service` par cette version durcie :
+Copie conforme de `whatsapp-agent.service` (repo) et de l’unité active :
 
 ```ini
 [Unit]
 Description=WhatsApp Dev Agent (hardened)
+# Auto-restart limits (anti boucle de crash) — doit être en [Unit], pas [Service].
+# En [Service] systemd les ignore silencieusement : le garde-fou devient inopérant.
+StartLimitIntervalSec=600
+StartLimitBurst=5
 After=network-online.target
 Wants=network-online.target
 
@@ -346,7 +344,13 @@ Wants=network-online.target
 Type=simple
 User=wa-agent
 Group=wa-agent
-WorkingDirectory=/opt/whatsapp-agent
+# Le code vit dans app/ ; /opt/whatsapp-agent ne contient que ce sous-dossier.
+# ExecStart résout index.js relativement à WorkingDirectory — sans /app le
+# service ne démarre pas.
+WorkingDirectory=/opt/whatsapp-agent/app
+# HOME pointe le parent : c'est la racine inscriptible (ReadWritePaths) et le
+# HOME du compte de service, distinct du CLAUDE_HOME du sous-processus.
+Environment=HOME=/opt/whatsapp-agent
 ExecStart=/usr/bin/node index.js
 Restart=always
 RestartSec=10
@@ -355,13 +359,16 @@ RestartSec=10
 EnvironmentFile=/etc/whatsapp-agent.env
 
 # === Hardening systemd ===
-# Pas d'élévation de privilèges
+# NoNewPrivileges + capabilities vides + ProtectSystem couvrent l'essentiel.
+# On NE met PAS SystemCallFilter ni RestrictRealtime parce que Claude Code
+# (Bun-compiled) appelle sched_setscheduler au boot → SIGSYS sinon.
+
 NoNewPrivileges=true
 
 # Filesystem
 ProtectSystem=strict
 ProtectHome=true
-ReadWritePaths=/opt/whatsapp-agent/auth /opt/whatsapp-agent/logs
+ReadWritePaths=/opt/whatsapp-agent
 PrivateTmp=true
 PrivateDevices=true
 ProtectKernelTunables=true
@@ -379,34 +386,21 @@ RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
 CapabilityBoundingSet=
 AmbientCapabilities=
 
-# System calls — bloque les dangereux
-# ⚠️ INCOMPATIBLE avec Claude Code en prod (SIGSYS sur sched_setscheduler) —
-# voir l'avertissement en tête de section. Retiré du fichier réellement déployé.
-SystemCallArchitectures=native
-SystemCallFilter=@system-service
-SystemCallFilter=~@privileged @resources @mount @swap @reboot @raw-io @cpu-emulation @debug @keyring @module @obsolete
-
 # Resource limits
 LimitNOFILE=4096
 LimitNPROC=512
 MemoryMax=2G
 TasksMax=200
 
-# Lock memory pour empêcher swap des secrets
+# Defense-in-depth (ces options ne cassent pas Claude Code)
 LockPersonality=true
-# ⚠️ INCOMPATIBLE avec Claude Code en prod (V8 fait du JIT mémoire) — mis à
-# false dans le fichier réellement déployé. Voir avertissement en tête de section.
-MemoryDenyWriteExecute=true
-# ⚠️ INCOMPATIBLE avec Claude Code en prod — retiré du fichier réellement déployé.
-RestrictRealtime=true
+# Redondant avec le défaut systemd (=no), conservé explicitement : Claude Code
+# fait du JIT mémoire (V8) et segfaulte si on active cette option. La ligne
+# documente la décision et protège d'un durcissement applique sans la tester.
+MemoryDenyWriteExecute=false
 RestrictNamespaces=true
 RestrictSUIDSGID=true
 RemoveIPC=true
-
-# Auto-restart limits (anti boucle de crash) — DOIT être en [Unit], pas ici.
-# StartLimitIntervalSec / StartLimitBurst sont silencieusement ignorés par
-# systemd s'ils sont placés dans [Service] (aucune erreur au démarrage, juste
-# un warning au boot) — corrigé en prod le 2026-07-19, voir git log.
 
 # Logs
 StandardOutput=journal
